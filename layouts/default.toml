@@ -1,0 +1,53 @@
+# Default layout: clock + weather / CPU + GPU / AI usage + RAM + network.
+# Copy this file to layouts/<name>.toml and run `turzx --layout <name>` to try variants.
+#
+# Screen is 800x480 (landscape). Each widget gets box = [x, y, width, height].
+# Any extra keys are passed to the widget as options; `interval` (seconds)
+# overrides how often it refreshes.
+
+[display]
+port = "auto"      # or e.g. "/dev/ttyACM1"
+brightness = 60      # 0-100
+dim_brightness = 10  # while the Omarchy screensaver runs
+follow_session = true  # dim on screensaver; off when locked or monitors are off
+flip = false       # rotate 180° if the screen is mounted upside down
+theme = "current"  # follow the active Omarchy theme live, or name one, e.g. "tokyo-night"
+
+[[widget]]
+type = "clock"
+box = [0, 0, 380, 136]
+
+[[widget]]
+type = "weather"
+box = [380, 0, 420, 136]
+units = "imperial" # or "metric"
+
+[[widget]]
+type = "cpu"
+box = [0, 136, 400, 150]
+# header turns yellow / red past these (°C, W)
+temp_warn = 75
+temp_crit = 85
+power_warn = 60
+power_crit = 80
+
+[[widget]]
+type = "gpu"
+box = [400, 136, 400, 150]
+temp_warn = 75
+temp_crit = 83
+power_warn = 180
+power_crit = 210
+
+[[widget]]
+type = "ai_usage"
+box = [0, 286, 400, 194]
+providers = ["claude", "codex"]
+
+[[widget]]
+type = "memory"
+box = [400, 286, 200, 194]
+
+[[widget]]
+type = "network"
+box = [600, 286, 200, 194]

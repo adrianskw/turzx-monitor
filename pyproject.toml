@@ -1,0 +1,25 @@
+[project]
+name = "turzx"
+version = "0.1.0"
+description = "Modular dashboard for the Turzx / Turing 5\" USB display"
+requires-python = ">=3.11"
+dependencies = [
+  "pyserial>=3.5",
+  "pillow>=10",
+  "numpy>=1.26",
+  "psutil>=5.9",
+  "nvidia-ml-py>=12",
+]
+
+[project.scripts]
+turzx = "turzx.app:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-data]
+turzx = ["assets/*.png"]
+
+[tool.setuptools.packages.find]
+include = ["turzx*"]

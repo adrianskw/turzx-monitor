@@ -1,0 +1,5 @@
+# Must sort before 73-seat-late.rules, which applies the uaccess ACL.
+# Turzx / Turing Smart Screen rev C (5"): sleeping and awake USB identities.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="ca21", TAG+="uaccess"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1d6b", ATTRS{idProduct}=="0106", TAG+="uaccess"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1d6b", ATTRS{idProduct}=="0121", TAG+="uaccess"
