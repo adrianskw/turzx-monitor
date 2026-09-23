@@ -145,11 +145,26 @@ These come from iterating on the real panel. Keep them when adding widgets.
   couldn't show anything under about 45 %. Per-core CPU bars snap to 10 % steps
   (about 2.7 px each); VRAM, RAM and AI usage use 1 % steps (1.2–2 px each).
 - **Squarish corners.** Cards use a 4 px radius and bars 3 px.
+- **One grid.** Every row splits at x=400, and the bottom row also splits at 600,
+  so the card edges line up down the screen. Row heights are 150 / 130 / 200.
 - **Use space for size, not decoration.** Headers only appear where the content
-  isn't obvious. The AI card relies on logos, and the network card only has
-  "NET". History graphs sit faintly behind headline numbers instead of taking
-  their own rows. A RAM history graph was tried and dropped: RAM barely moves,
-  so it drew as a flat shaded box.
+  isn't obvious. The AI card relies on logos, CPU and GPU are plain labels (model
+  names were dropped), and weather has no condition text because the icon says
+  it. CPU and GPU put usage %, temperature and watts on one `stat_line`, with
+  the history graph drawn faintly below. Graphs were dropped where they added
+  nothing: RAM barely moves, so its graph was a flat shaded box, and the network
+  graph was just noise.
+- **Stable readouts.** Network rates are averaged over 3 samples and never drop
+  below the K unit (idle reads `0.0K/s`), so idle chatter doesn't jump between
+  B, K and M.
+- **One fixed color per widget.** Bars and headline numbers don't change color
+  with their value. Each widget has its own color: CPU accent blue, GPU magenta,
+  RAM cyan, and Claude/Codex their brand colors. Load-based green/yellow/red was
+  dropped because it made the RAM card yellow and the core bars green for no
+  useful reason. Color changes are reserved for real warnings: temperature and
+  power thresholds, and AI usage ahead of pace or at 80 % or more.
+- **Bars fill their row.** Columns next to a bar are sized for their widest
+  possible value ("99%", "6d23h"), and the bar takes all remaining width.
 - **Warnings are per field.** Temperature and power turn yellow or red past
   per-widget thresholds. Defaults follow the hardware limits: the 7600X3D's
   Tjmax is 89 °C and its package power about 88 W; the 4070 SUPER throttles
@@ -159,8 +174,7 @@ These come from iterating on the real panel. Keep them when adding widgets.
 
 - **cpu.** Package power comes from RAPL energy deltas at
   `/sys/class/powercap/intel-rapl:0/energy_uj`, which also exists on AMD and is
-  world-readable here. Temperature is k10temp `Tctl`. The name is taken from
-  `/proc/cpuinfo` with vendor noise stripped.
+  world-readable here. Temperature is k10temp `Tctl`.
 - **gpu.** NVML (`nvidia-ml-py`); in-process, cheaper than running `nvidia-smi`.
 - **ai_usage.** Runs the same `claude-usage` / `codex-usage` CLIs as the Omarchy
   bar widgets, with `--format "{5h_pct}|{7d_pct}|{5h_reset}|{7d_reset}"` for

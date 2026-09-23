@@ -74,28 +74,26 @@ class Weather(Widget):
             d.text((t.PAD, 14), self.error or "loading weather…", font=t.font(t.BODY), fill=t.MUTED)
             return
         c = self.current
-        desc = CODES.get(c["weather_code"], ("", "—"))[1]
-        # current conditions: icon + temp (right-aligned so 100°+ grows left), details column
-        d.text((t.PAD, 6), glyph(c["weather_code"], c["is_day"]), font=t.font(64), fill=t.ORANGE)
-        t.text_right(d, 236, -4, f"{c['temperature_2m']:.0f}°", t.font(68, "bold"), t.TEXT)
+        # current conditions: icon + temp (right-aligned so 100°+ grows left), hi/lo + humidity
+        d.text((t.PAD, 4), glyph(c["weather_code"], c["is_day"]), font=t.font(76), fill=t.ORANGE)
+        t.text_right(d, 250, -8, f"{c['temperature_2m']:.0f}°", t.font(80, "bold"), t.TEXT)
         hi, lo = self.daily["temperature_2m_max"][0], self.daily["temperature_2m_min"][0]
-        fb = t.font(20, "bold")
-        t.fields_right(d, w - t.PAD, 8, [(f"↑{hi:.0f}°", t.RED), (f"↓{lo:.0f}°", t.CYAN)], fb, gap=" ")
-        t.text_right(d, w - t.PAD, 32, desc, t.font(18), t.TEXT)
-        t.text_right(d, w - t.PAD, 54, f"\U000F058E{t.pct_text(c['relative_humidity_2m'])}", t.font(18), t.MUTED)
+        fb = t.font(22, "bold")
+        t.fields_right(d, w - t.PAD, 10, [(f"↑{hi:.0f}°", t.RED), (f"↓{lo:.0f}°", t.CYAN)], fb, gap=" ")
+        t.text_right(d, w - t.PAD, 44, f"\U000F058E{t.pct_text(c['relative_humidity_2m'])}", t.font(20), t.MUTED)
         # hourly strip
         if not self.hours:
             return
-        top = 82
-        d.line((t.PAD, top - 4, w - t.PAD, top - 4), fill=t.TRACK, width=1)
+        top = 92
+        d.line((t.PAD, top - 6, w - t.PAD, top - 6), fill=t.TRACK, width=1)
         col = (w - 2 * t.PAD) / len(self.hours)
-        small, icon_f, temp_f = t.font(15, "bold"), t.font(24), t.font(19, "bold")
+        small, icon_f, temp_f = t.font(16, "bold"), t.font(26), t.font(21, "bold")
         for i, (when, code, is_day, temp) in enumerate(self.hours):
             cx = t.PAD + i * col + col / 2
             label = when.strftime("%-I%p").lower()
             d.text((cx - d.textlength(label, font=small) / 2, top), label, font=small, fill=t.MUTED)
             temp_s = f"{temp:.0f}°"
-            row_w = 26 + d.textlength(temp_s, font=temp_f)
+            row_w = 28 + d.textlength(temp_s, font=temp_f)
             x = cx - row_w / 2
-            d.text((x, top + 18), glyph(code, is_day), font=icon_f, fill=t.ORANGE if is_day else t.MAGENTA)
-            d.text((x + 26, top + 21), temp_s, font=temp_f, fill=t.TEXT)
+            d.text((x, top + 20), glyph(code, is_day), font=icon_f, fill=t.ORANGE if is_day else t.MAGENTA)
+            d.text((x + 28, top + 23), temp_s, font=temp_f, fill=t.TEXT)

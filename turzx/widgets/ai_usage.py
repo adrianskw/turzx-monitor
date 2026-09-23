@@ -61,6 +61,11 @@ class AiUsage(Widget):
     def draw(self, d, w, h):
         y = t.card(d, w, h)
         f, fb = t.font(22), t.font(22, "bold")
+        # fixed columns sized for the widest values ("99%", "6d23h") so bars use all the rest
+        reset_w = d.textlength("6d23h", font=f)
+        pct_right = w - t.PAD - reset_w - 12
+        bx = 112
+        bw = pct_right - d.textlength("99%", font=fb) - 10 - bx
         block = (h - 2 * y) / len(self.providers)
         for i, p in enumerate(self.providers):
             color = PROVIDERS[p][2]
@@ -74,13 +79,12 @@ class AiUsage(Widget):
             for j, (win, pct, reset) in enumerate((("5h", five, r5), ("7d", seven, r7))):
                 ry = by + block / 2 - 36 + j * 38
                 d.text((74, ry), win, font=fb, fill=t.MUTED)
-                bx, bw = 112, w - 112 - 164
-                t.bar(d, bx, ry + 8, bw, 14, pct, t.level_color(pct) if pct >= 50 else color)
+                t.bar(d, bx, ry + 8, bw, 14, pct, color)
                 pace = pace_pct(reset, win, time.monotonic() - self.fetched.get(p, time.monotonic()))
                 if pace is not None:  # tick where even usage across the window would be
                     mx = round(bx + bw * pace / 100)
                     d.rectangle((mx - 1, ry + 3, mx, ry + 26), fill=t.TEXT)
                 ahead = pace is not None and pct > pace + 5
                 pct_color = t.RED if pct >= 80 else t.YELLOW if ahead else t.TEXT
-                t.text_right(d, w - 92, ry, t.pct_text(pct), fb, pct_color)
+                t.text_right(d, pct_right, ry, t.pct_text(pct), fb, pct_color)
                 t.text_right(d, w - t.PAD, ry, reset, f, t.MUTED)

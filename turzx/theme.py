@@ -168,10 +168,15 @@ def watts_text(v: float, digits: int = 2) -> str:
     return capped(v, digits) + "W"
 
 
-def big_pct(d: ImageDraw.ImageDraw, x: int, y: int, v: float, size: int = BIG) -> None:
+def big_pct(d: ImageDraw.ImageDraw, x: int, y: int, v: float, size: int = BIG, color=None) -> None:
     """Headline percentage, right-aligned to a fixed "99%" width so the % sign never moves."""
     f = font(size, "bold")
-    text_right(d, x + d.textlength("99%", font=f), y, pct_text(v), f, level_color(v))
+    text_right(d, x + d.textlength("99%", font=f), y, pct_text(v), f, color or level_color(v))
+
+
+def role(name: str):
+    """Palette color by role name ("accent", "cyan", ...), resolved at draw time so theme switches apply."""
+    return globals()[name.upper()]
 
 
 def threshold_color(v: float | None, warn: float, crit: float):
@@ -187,13 +192,22 @@ def fields_right(d: ImageDraw.ImageDraw, right: float, y: int, fields, fnt, gap:
         right -= d.textlength(text + gap, font=fnt)
 
 
+def stat_line(d: ImageDraw.ImageDraw, w: int, y: int, label: str, fields, size: int = 30) -> None:
+    """Card headline: label on the left, fixed-width colored readings right-aligned."""
+    f = font(size, "bold")
+    d.text((PAD, y), label, font=f, fill=MUTED)
+    fields_right(d, w - PAD, y, fields, f)
+
+
 def text_right(d: ImageDraw.ImageDraw, right: int, y: int, text: str, fnt, fill=TEXT) -> None:
     d.text((right - d.textlength(text, font=fnt), y), text, font=fnt, fill=fill)
 
 
-def human_bytes(n: float, suffix: str = "") -> str:
-    for unit in ("B", "K", "M", "G", "T"):
-        if abs(n) < 1024 or unit == "T":
+def human_bytes(n: float, suffix: str = "", min_unit: str = "B") -> str:
+    """1536 -> '1.5K'. min_unit="K" keeps small values in K (e.g. '0.2K') instead of dropping to bytes."""
+    units = ("B", "K", "M", "G", "T")
+    for unit in units:
+        if (abs(n) < 1024 and units.index(unit) >= units.index(min_unit)) or unit == "T":
             return f"{n:.0f}{unit}{suffix}" if unit == "B" else f"{n:.1f}{unit}{suffix}"
         n /= 1024
     return f"{n:.1f}T{suffix}"

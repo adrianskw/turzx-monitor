@@ -9,15 +9,20 @@ from turzx.widget import Widget, register
 
 @register("network")
 class Network(Widget):
-    """Throughput for one interface (or all non-loopback ones)."""
+    """Throughput for one interface (or all physical ones).
+
+    Rates are averaged over a few samples and never drop below the K unit, so
+    idle chatter doesn't make the numbers flicker between B, K and M.
+    """
 
     interval = 1.0
 
     def __init__(self, **options):
         super().__init__(**options)
         self.iface = options.get("interface")
-        self.down = deque([0.0] * 40, maxlen=40)
-        self.up = deque([0.0] * 40, maxlen=40)
+        n = int(options.get("smooth", 3))
+        self.down = deque([0.0], maxlen=n)
+        self.up = deque([0.0], maxlen=n)
         self._last = None
 
     def _counters(self):
@@ -34,14 +39,14 @@ class Network(Widget):
             self.up.append((tx - tx0) / dt)
         self._last = (now, rx, tx)
 
+    def rate(self, samples) -> str:
+        return t.human_bytes(sum(samples) / len(samples), "/s", min_unit="K")
+
     def draw(self, d, w, h):
         y = t.card(d, w, h, "NET")
         f = t.font(30, "bold")
-        d.text((t.PAD, y), "↓", font=f, fill=t.CYAN)
-        t.text_right(d, w - t.PAD, y, t.human_bytes(self.down[-1], "/s"), f, t.TEXT)
-        d.text((t.PAD, y + 40), "↑", font=f, fill=t.MAGENTA)
-        t.text_right(d, w - t.PAD, y + 40, t.human_bytes(self.up[-1], "/s"), f, t.TEXT)
-        top, gh = y + 86, h - y - 96
-        vmax = max(max(self.down), max(self.up), 1024)
-        t.sparkline(d, t.PAD, top, w - 2 * t.PAD, gh, self.down, vmax=vmax, color=t.CYAN)
-        t.sparkline(d, t.PAD, top, w - 2 * t.PAD, gh, self.up, vmax=vmax, color=t.MAGENTA)
+        gap = (h - y - 2 * 36) / 3
+        for i, (arrow, color, samples) in enumerate((("↓", t.CYAN, self.down), ("↑", t.MAGENTA, self.up))):
+            ry = y + gap + i * (36 + gap) - 6
+            d.text((t.PAD, ry), arrow, font=f, fill=color)
+            t.text_right(d, w - t.PAD, ry, self.rate(samples), f, t.TEXT)

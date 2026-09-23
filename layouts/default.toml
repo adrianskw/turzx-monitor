@@ -15,16 +15,16 @@ theme = "current"  # follow the active Omarchy theme live, or name one, e.g. "to
 
 [[widget]]
 type = "clock"
-box = [0, 0, 380, 136]
+box = [0, 0, 400, 150]
 
 [[widget]]
 type = "weather"
-box = [380, 0, 420, 136]
+box = [400, 0, 400, 150]
 units = "imperial" # or "metric"
 
 [[widget]]
 type = "cpu"
-box = [0, 136, 400, 150]
+box = [0, 150, 400, 130]
 # header turns yellow / red past these (°C, W)
 temp_warn = 75
 temp_crit = 85
@@ -33,7 +33,7 @@ power_crit = 80
 
 [[widget]]
 type = "gpu"
-box = [400, 136, 400, 150]
+box = [400, 150, 400, 130]
 temp_warn = 75
 temp_crit = 83
 power_warn = 180
@@ -41,13 +41,13 @@ power_crit = 210
 
 [[widget]]
 type = "ai_usage"
-box = [0, 286, 400, 194]
+box = [0, 280, 400, 200]
 providers = ["claude", "codex"]
 
 [[widget]]
 type = "memory"
-box = [400, 286, 200, 194]
+box = [400, 280, 200, 200]
 
 [[widget]]
 type = "network"
-box = [600, 286, 200, 194]
+box = [600, 280, 200, 200]

@@ -16,7 +16,8 @@ class Memory(Widget):
     def draw(self, d, w, h):
         y = t.card(d, w, h, "RAM")
         pct = self.ram.percent
-        t.big_pct(d, w - t.PAD - d.textlength("99%", font=t.font(84, "bold")), y + 2, pct, 84)
+        color = t.role(self.options.get("color", "cyan"))
+        t.big_pct(d, w - t.PAD - d.textlength("99%", font=t.font(84, "bold")), y + 2, pct, 84, color)
         t.text_right(d, w - t.PAD, y + 98, f"{t.human_bytes(self.ram.used)}/{t.human_bytes(self.ram.total)}",
                      t.font(24), t.TEXT)
-        t.bar(d, t.PAD, h - 30, w - 2 * t.PAD, 16, pct)
+        t.bar(d, t.PAD, h - 30, w - 2 * t.PAD, 16, pct, color)

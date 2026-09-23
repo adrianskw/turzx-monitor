@@ -17,8 +17,8 @@ class Clock(Widget):
         right = w - t.PAD
         if self.options.get("ampm", True):
             ampm = t.font(34, "bold")
-            d.text((right - d.textlength("PM", font=ampm), 16), self.now.strftime("%p"), font=ampm, fill=t.MUTED)
+            d.text((right - d.textlength("PM", font=ampm), 18), self.now.strftime("%p"), font=ampm, fill=t.MUTED)
             right -= d.textlength("PM", font=ampm) + 6
         hm = self.now.strftime(self.options.get("format", "%-I:%M"))
-        t.text_right(d, right, -14, hm, t.font(100, "bold"), t.TEXT)
-        t.text_right(d, w - t.PAD, h - 42, self.now.strftime("%a, %b %-d"), t.font(30), t.MUTED)
+        t.text_right(d, right, -14, hm, t.font(106, "bold"), t.TEXT)
+        t.text_right(d, w - t.PAD, h - 46, self.now.strftime("%a, %b %-d"), t.font(32), t.MUTED)

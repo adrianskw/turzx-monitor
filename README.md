@@ -66,17 +66,17 @@ To try a variant, copy `layouts/default.toml`, edit the copy, and check it with
 
 ### Widgets
 
-Every widget also accepts `interval`: the number of seconds between data refreshes.
+Every widget also accepts `interval`: the number of seconds between data refreshes. `color` options take a palette role name: `accent`, `cyan`, `magenta`, `green`, `yellow`, `orange` or `red`.
 
 | type | options | shows |
 |---|---|---|
 | `clock` | `format` (strftime, default `%-I:%M`), `ampm` | time, AM/PM, date |
 | `weather` | `latitude`, `longitude`, `units` (`imperial`/`metric`) | current conditions + 5-hour forecast (Open-Meteo) |
-| `cpu` | `name`, `temp_warn`, `temp_crit`, `power_warn`, `power_crit` | load, per-core bars, temperature, package power |
-| `gpu` | `index`, `temp_warn`, `temp_crit`, `power_warn`, `power_crit` | NVIDIA load, VRAM, temperature, power |
+| `cpu` | `label`, `color`, `temp_warn`, `temp_crit`, `power_warn`, `power_crit` | one-line load / temperature / package power, per-core bars |
+| `gpu` | `index`, `label`, `color`, `temp_warn`, `temp_crit`, `power_warn`, `power_crit` | one-line NVIDIA load / temperature / power, VRAM |
 | `ai_usage` | `providers` (`claude`, `codex`) | 5-hour / 7-day limits with pace markers |
-| `memory` | — | RAM |
-| `network` | `interface` (default: all physical interfaces) | download/upload rate + graph |
+| `memory` | `color` | RAM |
+| `network` | `interface` (default: all physical), `smooth` (samples, 3) | download/upload rate, never below the K unit |
 
 ## Writing a widget
 
@@ -103,7 +103,7 @@ Then add a `[[widget]]` entry with `type = "hello"` and a `box` to a layout.
 Only pixels that changed since the last draw are sent to the screen.
 
 Use the helpers in `turzx/theme.py` (`big_pct`, `pct_text`, `temp_text`,
-`watts_text`, `bar`, `sparkline`, `text_right`, `fields_right`, `icon`) so a new
+`watts_text`, `stat_line`, `bar`, `sparkline`, `text_right`, `fields_right`, `icon`) so a new
 widget follows the same visual rules as the others. The rules are described in
 DESIGN.md.
 
