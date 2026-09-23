@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tomllib
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 
@@ -101,9 +102,28 @@ RADIUS = 4  # card corner radius
 BAR_RADIUS = 3
 
 
+_frameless = False
+
+
+@contextmanager
+def frameless():
+    """Inside this block card() skips its background: the widget sits in a shared [[card]]."""
+    global _frameless
+    _frameless = True
+    try:
+        yield
+    finally:
+        _frameless = False
+
+
+def card_rect(d: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int) -> None:
+    d.rounded_rectangle((x + 2, y + 2, x + w - 3, y + h - 3), radius=RADIUS, fill=CARD)
+
+
 def card(d: ImageDraw.ImageDraw, w: int, h: int, title: str | None = None) -> int:
     """Draw the card background; returns the y where content should start."""
-    d.rounded_rectangle((2, 2, w - 3, h - 3), radius=RADIUS, fill=CARD)
+    if not _frameless:
+        card_rect(d, 0, 0, w, h)
     if title:
         d.text((PAD, 10), title, font=font(TITLE, "bold"), fill=MUTED)
         return 36
@@ -192,15 +212,40 @@ def fields_right(d: ImageDraw.ImageDraw, right: float, y: int, fields, fnt, gap:
         right -= d.textlength(text + gap, font=fnt)
 
 
-def stat_line(d: ImageDraw.ImageDraw, w: int, y: int, label: str, fields, size: int = 30) -> None:
+def stat_line(d: ImageDraw.ImageDraw, w: int, y: int, label: str, fields, size: int = 30, gap: str = " ") -> None:
     """Card headline: label on the left, fixed-width colored readings right-aligned."""
     f = font(size, "bold")
     d.text((PAD, y), label, font=f, fill=MUTED)
-    fields_right(d, w - PAD, y, fields, f)
+    fields_right(d, w - PAD, y, fields, f, gap=gap)
 
 
 def text_right(d: ImageDraw.ImageDraw, right: int, y: int, text: str, fnt, fill=TEXT) -> None:
     d.text((right - d.textlength(text, font=fnt), y), text, font=fnt, fill=fill)
+
+
+def human_count(n: float) -> str:
+    """12345 -> '12.3K', 4.2e6 -> '4.2M'."""
+    for unit, size in (("B", 1e9), ("M", 1e6), ("K", 1e3)):
+        if n >= size:
+            return f"{n / size:.1f}{unit}"
+    return f"{n:.0f}"
+
+
+def duration_text(seconds: float) -> str:
+    """Compact age: '45s', '12m', '3h', '2d'."""
+    for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
+        if seconds >= size:
+            return f"{int(seconds // size)}{unit}"
+    return f"{int(seconds)}s"
+
+
+def fit_text(d: ImageDraw.ImageDraw, text: str, fnt, width: float) -> str:
+    """Truncate with an ellipsis so text fits in width pixels."""
+    if d.textlength(text, font=fnt) <= width:
+        return text
+    while text and d.textlength(text + "…", font=fnt) > width:
+        text = text[:-1]
+    return text + "…"
 
 
 def human_bytes(n: float, suffix: str = "", min_unit: str = "B") -> str:

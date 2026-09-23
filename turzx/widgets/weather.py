@@ -85,7 +85,6 @@ class Weather(Widget):
         if not self.hours:
             return
         top = 92
-        d.line((t.PAD, top - 6, w - t.PAD, top - 6), fill=t.TRACK, width=1)
         col = (w - 2 * t.PAD) / len(self.hours)
         small, icon_f, temp_f = t.font(16, "bold"), t.font(26), t.font(21, "bold")
         for i, (when, code, is_day, temp) in enumerate(self.hours):

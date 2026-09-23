@@ -53,6 +53,10 @@ on the 800×480 canvas, and any widget options.
 To try a variant, copy `layouts/default.toml`, edit the copy, and check it with
 `--preview --once` before running it on the screen.
 
+Several widgets can share one card. Add a `[[card]]` entry with its own `box`,
+then give each widget inside it `frame = false`. The default layout uses this
+for the bottom row: AI limits on the left and agents on the right, in one card.
+
 ### `[display]` options
 
 | key | default | meaning |
@@ -70,13 +74,15 @@ Every widget also accepts `interval`: the number of seconds between data refresh
 
 | type | options | shows |
 |---|---|---|
+| `clock_weather` | all `clock` + `weather` options | full-width card: time and date on the left; current weather and a 5-hour forecast on the right |
 | `clock` | `format` (strftime, default `%-I:%M`), `ampm` | time, AM/PM, date |
 | `weather` | `latitude`, `longitude`, `units` (`imperial`/`metric`) | current conditions + 5-hour forecast (Open-Meteo) |
-| `cpu` | `label`, `color`, `temp_warn`, `temp_crit`, `power_warn`, `power_crit` | one-line load / temperature / package power, per-core bars |
-| `gpu` | `index`, `label`, `color`, `temp_warn`, `temp_crit`, `power_warn`, `power_crit` | one-line NVIDIA load / temperature / power, VRAM |
+| `cpu` | `label`, `color`, `temp_warn`, `temp_crit`, `power_warn`, `power_crit` | one-line load / temperature / package power over a history graph, per-core bars |
+| `gpu` | `index`, `label`, `color`, `temp_warn`, `temp_crit`, `power_warn`, `power_crit` | one-line NVIDIA load / temperature / power over a history graph, VRAM bar |
 | `ai_usage` | `providers` (`claude`, `codex`) | 5-hour / 7-day limits with pace markers |
-| `memory` | `color` | RAM |
-| `network` | `interface` (default: all physical), `smooth` (samples, 3) | download/upload rate, never below the K unit |
+| `memory` | `color` | one-line RAM % with a usage bar and GB used |
+| `agents` | `active_minutes` (30), `working_seconds` (60), `rate_minutes` (5) | token burn (tok/min, today) and active Claude Code / Codex sessions |
+| `network` | `interface` (default: all physical), `smooth` (samples, 3) | download/upload rate, never below the K unit (not in the default layout) |
 
 ## Writing a widget
 

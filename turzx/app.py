@@ -28,6 +28,7 @@ LAYOUTS = Path(__file__).resolve().parent.parent / "layouts"
 class Slot:
     widget: Widget
     box: tuple[int, int, int, int]  # x, y, w, h
+    frame: bool = True  # False: draw inside a shared [[card]] instead of its own
     next_due: float = 0.0
     future: Future | None = None
     ready: bool = False
@@ -35,30 +36,52 @@ class Slot:
     last: Image.Image | None = field(default=None, repr=False)
 
 
-def load_config(path: Path) -> tuple[dict, list[Slot]]:
+def load_config(path: Path) -> tuple[dict, list[Slot], list[tuple]]:
     cfg = tomllib.loads(path.read_text())
     slots = []
     for spec in cfg.get("widget", []):
         spec = dict(spec)
         kind, box = spec.pop("type"), tuple(spec.pop("box"))
+        frame = spec.pop("frame", True)
         if kind not in REGISTRY:
             raise SystemExit(f"unknown widget type {kind!r}; available: {', '.join(sorted(REGISTRY))}")
-        slots.append(Slot(REGISTRY[kind](**spec), box))
-    return cfg.get("display", {}), slots
+        slots.append(Slot(REGISTRY[kind](**spec), box, frame))
+    cards = [tuple(c["box"]) for c in cfg.get("card", [])]
+    return cfg.get("display", {}), slots, cards
 
 
-def render(slot: Slot) -> Image.Image:
-    _, _, w, h = slot.box
-    img = Image.new("RGB", (w, h), theme.BG)
+def background(size: tuple[int, int], cards: list[tuple]) -> Image.Image:
+    """Screen background: gap color plus the shared cards that frameless widgets sit in."""
+    img = Image.new("RGB", size, theme.BG)
     d = ImageDraw.Draw(img)
+    for box in cards:
+        theme.card_rect(d, *box)
+    return img
+
+
+def render(slot: Slot, bg: Image.Image | None = None) -> Image.Image:
+    x, y, w, h = slot.box
+    if slot.frame:
+        img = Image.new("RGB", (w, h), theme.BG)
+    else:  # start from the shared card underneath
+        img = bg.crop((x, y, x + w, y + h)) if bg else Image.new("RGB", (w, h), theme.CARD)
+    d = ImageDraw.Draw(img)
+    if not slot.frame:
+        with theme.frameless():
+            _draw(slot, d, w, h)
+    else:
+        _draw(slot, d, w, h)
+    return img
+
+
+def _draw(slot: Slot, d: ImageDraw.ImageDraw, w: int, h: int) -> None:
     if not slot.ready:
         theme.card(d, w, h, slot.widget.kind.upper())
-        return img
+        return
     try:
         slot.widget.draw(d, w, h)
     except Exception:
         log.exception("%s.draw failed", slot.widget.kind)
-    return img
 
 
 def _run_update(widget: Widget) -> None:
@@ -69,9 +92,10 @@ def _run_update(widget: Widget) -> None:
 
 
 class App:
-    def __init__(self, display_cfg: dict, slots: list[Slot], preview: str | None):
+    def __init__(self, display_cfg: dict, slots: list[Slot], preview: str | None, cards: list[tuple] = ()):
         self.cfg = display_cfg
         self.slots = slots
+        self.cards = list(cards)
         self.preview = preview
         self.pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="widget")
         self.display = None
@@ -99,9 +123,10 @@ class App:
 
     def repaint(self) -> None:
         """Compose every widget into one full frame (no flash of blank cards)."""
-        self.canvas = Image.new("RGB", self.display.size, theme.BG)
+        self.bg = background(self.display.size, self.cards)
+        self.canvas = self.bg.copy()
         for s in self.slots:
-            s.last = render(s)
+            s.last = render(s, self.bg)
             s.dirty = False
             self.canvas.paste(s.last, s.box[:2])
         self.display.show_full(self.canvas)
@@ -159,7 +184,7 @@ class App:
                 continue
             s.dirty = False
             x, y, _, _ = s.box
-            img = render(s)
+            img = render(s, self.bg)
             bbox = (0, 0, *img.size) if s.last is None else ImageChops.difference(img, s.last).getbbox()
             s.last = img
             if bbox:
@@ -175,6 +200,8 @@ class App:
         except OSError:
             log.exception("display init failed; retrying")
             self._reconnect()
+        if not self.running:
+            return
         if once:
             wait([self.pool.submit(_run_update, s.widget) for s in self.slots], timeout=60)
             for s in self.slots:
@@ -194,21 +221,27 @@ class App:
             time.sleep(0.05)
 
     def _reconnect(self) -> None:
-        try:
-            self.display.close()
-        except Exception:
-            pass
-        while True:
+        if self.display is not None:
+            try:
+                self.display.close()
+            except Exception:
+                pass
+            self.display = None
+        while self.running:
             time.sleep(3)
+            if not self.running:
+                break
             try:
                 self.connect()
                 return
             except Exception as e:
                 log.warning("reconnect failed: %s", e)
-                try:
-                    self.display.close()
-                except Exception:
-                    pass
+                if self.display is not None:
+                    try:
+                        self.display.close()
+                    except Exception:
+                        pass
+                    self.display = None
 
 
 def main() -> None:
@@ -232,9 +265,9 @@ def main() -> None:
     if not path.exists():
         raise SystemExit(f"layout not found: {path} (try --list)")
     log.info("layout %s", path)
-    display_cfg, slots = load_config(path)
+    display_cfg, slots, cards = load_config(path)
     theme.load(display_cfg.get("theme", "current"))
-    app = App(display_cfg, slots, args.preview)
+    app = App(display_cfg, slots, args.preview, cards)
 
     def stop(*_):  # finish the in-flight update instead of dying mid-transfer
         app.running = False

@@ -48,15 +48,15 @@ class Cpu(Widget):
         t.card(d, w, h)
         o = self.options
         color = t.role(o.get("color", "accent"))
+        strip = h - 24  # per-core bars along the bottom
+        # history graph sits faintly behind the headline
+        t.sparkline(d, t.PAD, 6, w - 2 * t.PAD, strip - 12, self.history, color=color, dim=True)
         fields = [(t.pct_text(self.total), color)]
         if self.temp is not None:
             fields.append((t.temp_text(self.temp), t.threshold_color(self.temp, o.get("temp_warn", 75), o.get("temp_crit", 85))))
         if self.power is not None:
             fields.append((t.watts_text(self.power, 2), t.threshold_color(self.power, o.get("power_warn", 60), o.get("power_crit", 80))))
         t.stat_line(d, w, 6, o.get("label", "CPU"), fields)
-        strip = h - 26  # per-core bars along the bottom
-        top = 50
-        t.sparkline(d, t.PAD, top, w - 2 * t.PAD, strip - top - 8, self.history, color=color, dim=True)
         n = len(self.cores) or 1
         slot = (w - 2 * t.PAD + 4) / n
         for i, pct in enumerate(self.cores):

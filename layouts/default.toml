@@ -1,9 +1,10 @@
-# Default layout: clock + weather / CPU + GPU / AI usage + RAM + network.
+# Default layout: clock & weather / CPU + GPU + RAM / AI usage + agents.
 # Copy this file to layouts/<name>.toml and run `turzx --layout <name>` to try variants.
 #
 # Screen is 800x480 (landscape). Each widget gets box = [x, y, width, height].
 # Any extra keys are passed to the widget as options; `interval` (seconds)
-# overrides how often it refreshes.
+# overrides how often it refreshes. `frame = false` draws a widget inside a shared
+# [[card]] instead of its own card.
 
 [display]
 port = "auto"      # or e.g. "/dev/ttyACM1"
@@ -14,17 +15,14 @@ flip = false       # rotate 180° if the screen is mounted upside down
 theme = "current"  # follow the active Omarchy theme live, or name one, e.g. "tokyo-night"
 
 [[widget]]
-type = "clock"
-box = [0, 0, 400, 150]
-
-[[widget]]
-type = "weather"
-box = [400, 0, 400, 150]
+type = "clock_weather"
+box = [0, 0, 800, 190]
 units = "imperial" # or "metric"
 
+# middle row: three one-line stat cards, sized to fit their text at 30px
 [[widget]]
 type = "cpu"
-box = [0, 150, 400, 130]
+box = [0, 190, 314, 90]
 # header turns yellow / red past these (°C, W)
 temp_warn = 75
 temp_crit = 85
@@ -33,21 +31,32 @@ power_crit = 80
 
 [[widget]]
 type = "gpu"
-box = [400, 150, 400, 130]
+box = [314, 190, 332, 90]
 temp_warn = 75
 temp_crit = 83
 power_warn = 180
 power_crit = 210
 
 [[widget]]
+type = "memory"
+box = [646, 190, 154, 90]
+
+# bottom row: one card shared by AI limits (left) and agents / token burn (right)
+[[card]]
+box = [0, 280, 800, 200]
+
+[[widget]]
 type = "ai_usage"
 box = [0, 280, 400, 200]
+frame = false
 providers = ["claude", "codex"]
 
 [[widget]]
-type = "memory"
-box = [400, 280, 200, 200]
+type = "agents"
+box = [400, 280, 400, 200]
+frame = false
 
-[[widget]]
-type = "network"
-box = [600, 280, 200, 200]
+# network widget is available but not shown:
+# [[widget]]
+# type = "network"
+# box = [x, y, w, h]

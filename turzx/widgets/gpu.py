@@ -46,20 +46,16 @@ class Gpu(Widget):
             t.stat_line(d, w, 6, o.get("label", "GPU"), [("n/a", t.MUTED)])
             return
         color = t.role(o.get("color", "magenta"))
+        strip = h - 24  # VRAM row along the bottom
+        t.sparkline(d, t.PAD, 6, w - 2 * t.PAD, strip - 12, self.history, color=color, dim=True)
         t.stat_line(d, w, 6, o.get("label", "GPU"), [
             (t.pct_text(self.util), color),
             (t.temp_text(self.temp), t.threshold_color(self.temp, o.get("temp_warn", 75), o.get("temp_crit", 83))),
             (t.watts_text(self.power, 3), t.threshold_color(self.power, o.get("power_warn", 180), o.get("power_crit", 210))),
         ])
-        strip = h - 30  # VRAM row along the bottom
-        top = 50
-        t.sparkline(d, t.PAD, top, w - 2 * t.PAD, strip - top - 4, self.history, color=color, dim=True)
         vram = 100 * self.mem_used / self.mem_total if self.mem_total else 0
         f = t.font(18, "bold")
-        d.text((t.PAD, strip - 2), "VRAM", font=f, fill=t.MUTED)
-        label = f"{t.human_bytes(self.mem_used)}/{t.human_bytes(self.mem_total)}"
-        t.text_right(d, w - t.PAD, strip - 2, label, f, t.TEXT)
-        bx = t.PAD + 56
+        t.text_right(d, w - t.PAD, strip - 4, f"{t.human_bytes(self.mem_used)}/{t.human_bytes(self.mem_total)}", f, t.TEXT)
         # reserve the widest possible label so the bar never changes length
         widest = f"999.9M/{t.human_bytes(self.mem_total)}"
-        t.bar(d, bx, strip + 4, w - t.PAD - d.textlength(widest, font=f) - 10 - bx, 12, vram, color)
+        t.bar(d, t.PAD, strip, w - 2 * t.PAD - d.textlength(widest, font=f) - 10, 14, vram, color)

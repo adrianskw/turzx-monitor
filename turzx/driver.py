@@ -80,7 +80,7 @@ class TurzxDisplay:
         if port == "auto":
             port = find_port()
             if port is None:
-                raise RuntimeError("Turzx display not found (is it plugged in and awake?)")
+                raise OSError("Turzx display not found (is it plugged in and awake?)")
         self.flip = flip
         self._count = 0
         # Set when the screen drops a partial update and asks for a resend; the
@@ -88,12 +88,16 @@ class TurzxDisplay:
         self.needs_full = False
         self.serial = serial.Serial(port, 115200, timeout=1, rtscts=True, write_timeout=10)
         log.info("opened %s", port)
-        self._hello()
-        self._send(STOP_VIDEO)
-        self._send(STOP_MEDIA, read=1024)
-        self.set_brightness(brightness)
-        # start mode default, no hardware flip (we rotate in software), sleep interval off
-        self._send(OPTIONS, bytes((0x00, 0x00, 0x00, 0x00)))
+        try:
+            self._hello()
+            self._send(STOP_VIDEO)
+            self._send(STOP_MEDIA, read=1024)
+            self.set_brightness(brightness)
+            # start mode default, no hardware flip (we rotate in software), sleep interval off
+            self._send(OPTIONS, bytes((0x00, 0x00, 0x00, 0x00)))
+        except Exception:
+            self.serial.close()
+            raise
 
     def _send(self, cmd: bytes, payload: bytes = b"", pad: int = 0x00, read: int | None = None) -> bytes:
         msg = cmd + payload
@@ -113,7 +117,7 @@ class TurzxDisplay:
             log.warning("unexpected hello response %r, retrying", ident)
             time.sleep(1)
         else:
-            raise RuntimeError("display did not answer HELLO")
+            raise OSError("display did not answer HELLO")
         try:
             self.rom = int(ident.split(".")[2])
         except (IndexError, ValueError):

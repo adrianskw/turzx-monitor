@@ -146,12 +146,18 @@ These come from iterating on the real panel. Keep them when adding widgets.
   (about 2.7 px each); VRAM, RAM and AI usage use 1 % steps (1.2–2 px each).
 - **Squarish corners.** Cards use a 4 px radius and bars 3 px.
 - **One grid.** Every row splits at x=400, and the bottom row also splits at 600,
-  so the card edges line up down the screen. Row heights are 150 / 130 / 200.
+  so the card edges line up down the screen. Row heights are 190 / 90 / 200.
+  The top and bottom rows are single full-width cards. The middle row is
+  CPU / GPU / RAM, sized 314 / 332 / 154 to fit their stat lines at 30 px:
+  CPU needs 2 watt digits, GPU 3, and RAM only a percentage. Fitting three stat
+  lines in 800 px is why the stat font went from 34 back to 30.
 - **Use space for size, not decoration.** Headers only appear where the content
   isn't obvious. The AI card relies on logos, CPU and GPU are plain labels (model
   names were dropped), and weather has no condition text because the icon says
-  it. CPU and GPU put usage %, temperature and watts on one `stat_line`, with
-  the history graph drawn faintly below. Graphs were dropped where they added
+  it. CPU and GPU put usage %, temperature and watts on one `stat_line`, drawn
+  over a faint history graph, with the core or VRAM bar underneath (no "VRAM"
+  label). That keeps those cards 90 px tall, which leaves more room for the
+  clock and weather. Graphs were dropped where they added
   nothing: RAM barely moves, so its graph was a flat shaded box, and the network
   graph was just noise.
 - **Stable readouts.** Network rates are averaged over 3 samples and never drop
@@ -187,6 +193,29 @@ These come from iterating on the real panel. Keep them when adding widgets.
   because 6 was too cramped at 420 px.
 - **clock.** Updates every second so the minute flips on time, but the diffing
   means only a minute change actually sends pixels.
+- **clock_weather.** Combines the two in one full-width card, because the clock
+  alone left a lot of empty space. The left half is time and date
+  (right-aligned to the center line). The right half has the icon,
+  temperature and a high/low/humidity column on top, and 5 hourly columns
+  below, each stacking hour, icon and temperature. Side-by-side icon and
+  temperature was too cramped at 75 px per column. It
+  reuses the `Clock` and `Weather` classes, and runs the weather fetch on its
+  own thread so a slow HTTP call never delays the clock tick. The hourly list
+  has no divider line; spacing separates it.
+
+- **agents.** Reads the Claude Code and Codex session logs incrementally, only
+  new bytes each time (about 15 MB/day on the first read), every 5 s. "Burn"
+  counts fresh tokens: input + output + cache writes, with Codex input minus
+  its cached input. Cache reads are excluded because they are over 95 % of raw
+  input and cheap. A session is active if its log changed in the last 30 min,
+  and working if it changed in the last 60 s. A long tool call can therefore
+  briefly show as idle.
+- **Shared cards.** `[[card]]` entries are drawn into the background image.
+  Widgets with `frame = false` start from that background (`render` crops it)
+  and draw inside `theme.frameless()`, where `card()` skips its own fill. It's
+  how the AI limits and agents share one bottom card without a new composite
+  widget.
+- **network.** Removed from the default layout; the code is kept.
 
 ## Ideas not yet done
 
