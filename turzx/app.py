@@ -16,7 +16,7 @@ from pathlib import Path
 from PIL import Image, ImageChops, ImageDraw
 
 from turzx import session, theme
-from turzx.driver import PreviewDisplay, TurzxDisplay
+from turzx.driver import HEIGHT, WIDTH, PreviewDisplay, TurzxDisplay
 from turzx.widget import REGISTRY, Widget
 import turzx.widgets  # noqa: F401  (registers widgets)
 
@@ -34,19 +34,64 @@ class Slot:
     ready: bool = False
     dirty: bool = True
     last: Image.Image | None = field(default=None, repr=False)
+    next_frame: float = 0.0
 
 
-def load_config(path: Path) -> tuple[dict, list[Slot], list[tuple]]:
+def _box(value: object, label: str) -> tuple[int, int, int, int]:
+    if not isinstance(value, list) or len(value) != 4 or any(type(n) is not int for n in value):
+        raise SystemExit(f"{label}: box must be [x, y, width, height] with integers")
+    x, y, w, h = value
+    if x < 0 or y < 0 or w <= 0 or h <= 0 or x + w > WIDTH or y + h > HEIGHT:
+        raise SystemExit(f"{label}: box {value} must fit inside the {WIDTH}x{HEIGHT} display")
+    return x, y, w, h
+
+
+def _overlap(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    return ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah
+
+
+def _contains(outer: tuple[int, int, int, int], inner: tuple[int, int, int, int]) -> bool:
+    ox, oy, ow, oh = outer
+    x, y, w, h = inner
+    return ox <= x and oy <= y and x + w <= ox + ow and y + h <= oy + oh
+
+
+def load_config(path: Path, sample: bool = False) -> tuple[dict, list[Slot], list[tuple[int, int, int, int]]]:
     cfg = tomllib.loads(path.read_text())
+    cards = [_box(c.get("box"), f"card[{i}]") for i, c in enumerate(cfg.get("card", []), 1)]
+    for i, card in enumerate(cards):
+        for j, other in enumerate(cards[:i], 1):
+            if _overlap(card, other):
+                raise SystemExit(f"card[{i + 1}] overlaps card[{j}]")
     slots = []
-    for spec in cfg.get("widget", []):
+    for i, spec in enumerate(cfg.get("widget", []), 1):
         spec = dict(spec)
-        kind, box = spec.pop("type"), tuple(spec.pop("box"))
+        kind = spec.pop("type", None)
+        label = f"widget[{i}] ({kind or 'missing type'})"
+        box = _box(spec.pop("box", None), label)
         frame = spec.pop("frame", True)
-        if kind not in REGISTRY:
+        if type(frame) is not bool:
+            raise SystemExit(f"{label}: frame must be true or false")
+        if not isinstance(kind, str) or kind not in REGISTRY:
             raise SystemExit(f"unknown widget type {kind!r}; available: {', '.join(sorted(REGISTRY))}")
-        slots.append(Slot(REGISTRY[kind](**spec), box, frame))
-    cards = [tuple(c["box"]) for c in cfg.get("card", [])]
+        for j, other in enumerate(slots, 1):
+            if _overlap(box, other.box):
+                raise SystemExit(f"{label} overlaps widget[{j}] ({other.widget.kind})")
+        if frame and any(_overlap(box, card) for card in cards):
+            raise SystemExit(f"{label}: framed widget overlaps a shared card")
+        if not frame and not any(_contains(card, box) for card in cards):
+            raise SystemExit(f"{label}: frame=false requires a containing [[card]]")
+        try:
+            widget = REGISTRY[kind](**spec, _sample=True) if sample and kind in ("cpu", "gpu") else REGISTRY[kind](**spec)
+        except ValueError as exc:
+            raise SystemExit(f"{label}: {exc}") from exc
+        slots.append(Slot(widget, box, frame))
+    sources = {slot.widget.kind: slot.widget for slot in slots if slot.widget.kind in ("cpu", "gpu")}
+    for slot in slots:
+        if slot.widget.kind == "agents":
+            slot.widget.bind_history_sources(sources)
     return cfg.get("display", {}), slots, cards
 
 
@@ -84,9 +129,12 @@ def _draw(slot: Slot, d: ImageDraw.ImageDraw, w: int, h: int) -> None:
         log.exception("%s.draw failed", slot.widget.kind)
 
 
-def _run_update(widget: Widget) -> None:
+def _run_update(widget: Widget, once: bool = False) -> None:
     try:
-        widget.update()
+        if once:
+            widget.update_once()
+        else:
+            widget.update()
     except Exception:
         log.exception("%s.update failed", widget.kind)
 
@@ -146,11 +194,15 @@ class App:
                 self._mode_future = self.pool.submit(session.mode)
             stamp = self._theme_stamp()
             if stamp != self._theme_mtime:
-                self._theme_mtime = stamp
                 log.info("theme changed; reloading %s", self.theme_name)
-                theme.load(self.theme_name)
-                if self.mode != session.OFF:
-                    self.repaint()
+                try:
+                    theme.load(self.theme_name)
+                except (OSError, ValueError, SystemExit) as exc:
+                    log.warning("theme reload failed; retaining current colors: %s", exc)
+                else:
+                    self._theme_mtime = stamp
+                    if self.mode != session.OFF:
+                        self.repaint()
         if self._mode_future is not None and self._mode_future.done():
             new = self._mode_future.result()
             self._mode_future = None
@@ -176,7 +228,14 @@ class App:
                 s.future, s.ready, s.dirty = None, True, True
                 # align to wall clock so e.g. the clock ticks right on the second
                 iv = s.widget.next_delay()
+                if not isinstance(iv, (int, float)) or not math.isfinite(iv) or iv <= 0:
+                    log.error("%s.next_delay() returned %r; using interval %s", s.widget.kind, iv, s.widget.interval)
+                    iv = s.widget.interval
                 s.next_due = math.floor(now / iv + 1) * iv
+            fi = s.widget.frame_interval
+            if fi and s.ready and now >= s.next_frame:  # animation: redraw, don't re-fetch
+                s.dirty = True
+                s.next_frame = math.floor(now / fi + 1) * fi
 
     def flush(self) -> None:
         for s in self.slots:
@@ -194,7 +253,7 @@ class App:
         if getattr(self.display, "needs_full", False):
             self.display.show_full(self.canvas)
 
-    def run(self, once: bool = False) -> None:
+    def run(self, once: bool = False, sample: bool = False) -> None:
         try:
             self.connect()
         except OSError:
@@ -202,10 +261,23 @@ class App:
             self._reconnect()
         if not self.running:
             return
+        if sample:
+            from turzx.sample import populate
+
+            for slot in self.slots:
+                populate(slot.widget)
+                slot.ready = slot.dirty = True
+            self.flush()
+            return
         if once:
-            wait([self.pool.submit(_run_update, s.widget) for s in self.slots], timeout=60)
-            for s in self.slots:
-                s.ready = True
+            futures = {self.pool.submit(_run_update, s.widget, True): s for s in self.slots}
+            done, pending = wait(futures, timeout=60)
+            if pending:
+                log.warning("%d widget update(s) did not finish within 60 seconds", len(pending))
+            for future in done:
+                slot = futures[future]
+                slot.ready = True
+                slot.dirty = True
             self.flush()
             return
         while self.running:
@@ -253,8 +325,11 @@ def main() -> None:
     ap.add_argument("--preview", nargs="?", const="preview.png", metavar="PNG",
                     help="render to a PNG instead of the hardware")
     ap.add_argument("--once", action="store_true", help="render a single frame and exit")
+    ap.add_argument("--sample-data", action="store_true", help="use fixed data for --preview --once")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
+    if args.sample_data and (not args.preview or not args.once):
+        ap.error("--sample-data requires --preview and --once")
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if args.list:
@@ -265,7 +340,7 @@ def main() -> None:
     if not path.exists():
         raise SystemExit(f"layout not found: {path} (try --list)")
     log.info("layout %s", path)
-    display_cfg, slots, cards = load_config(path)
+    display_cfg, slots, cards = load_config(path, sample=args.sample_data)
     theme.load(display_cfg.get("theme", "current"))
     app = App(display_cfg, slots, args.preview, cards)
 
@@ -275,7 +350,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     try:
-        app.run(once=args.once)
+        app.run(once=args.once, sample=args.sample_data)
     finally:
         app.pool.shutdown(wait=False, cancel_futures=True)
         if app.display:

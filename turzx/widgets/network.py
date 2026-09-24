@@ -20,7 +20,9 @@ class Network(Widget):
     def __init__(self, **options):
         super().__init__(**options)
         self.iface = options.get("interface")
-        n = int(options.get("smooth", 3))
+        n = int(options.get("smooth", 2))  # samples at 1 s each
+        if n <= 0:
+            raise ValueError("smooth must be a positive number of samples")
         self.down = deque([0.0], maxlen=n)
         self.up = deque([0.0], maxlen=n)
         self._last = None

@@ -1,0 +1,86 @@
+# Compact layout: same grid as default, but glyphs instead of words wherever the
+# meaning is obvious, which buys bigger numbers and more room for agent sessions.
+#   - CPU/GPU/RAM labels are icons, temps drop the "C", stat font back to 34 px
+#   - weather icon sits faintly behind the temperature; 7 forecast hours
+#   - numbers are 3 s rolling means (widget `smooth` option; graphs stay raw)
+#   - bottom-left: token burn line above the AI limits; 5h = thick bar and large
+#     type, 7d = thin bar and small type, no window labels
+#   - bottom-right: agent sessions only, blinking dot for "working"
+
+[display]
+port = "auto"
+brightness = 60
+dim_brightness = 10
+follow_session = true
+flip = false
+theme = "current"
+
+[[widget]]
+type = "clock_weather"
+box = [0, 0, 800, 170]
+units = "imperial"
+icon_behind = true
+ampm_behind = true
+hourly_icon_behind = true
+stale = "icon"
+temp_size = 100
+hilo_size = 24
+date_size = 38
+time_size = 118
+condense_one = false
+hours = 7
+humidity_min = 0
+
+# middle row: CPU and GPU share one column structure (3-digit watts), equal widths
+[[widget]]
+type = "cpu"
+box = [0, 170, 319, 90]
+label = ""
+temp_unit = "°"
+size = 34
+watt_digits = 3
+temp_warn = 75
+temp_crit = 85
+power_warn = 60
+power_crit = 80
+
+[[widget]]
+type = "gpu"
+box = [319, 170, 319, 90]
+label = "\U000F08AE"
+temp_unit = "°"
+size = 34
+temp_warn = 75
+temp_crit = 83
+power_warn = 180
+power_crit = 210
+
+[[widget]]
+type = "memory"
+box = [638, 170, 162, 90]
+label = "\U000F061A"
+size = 34
+
+[[card]]
+box = [0, 260, 800, 220]
+
+[[widget]]
+type = "burn"
+box = [0, 260, 370, 50]
+frame = false
+
+[[widget]]
+type = "ai_usage"
+box = [0, 310, 370, 170]
+frame = false
+providers = ["claude", "codex"]
+window_labels = false
+stale = "icon"
+
+[[widget]]
+type = "agents"
+box = [370, 260, 430, 220]
+frame = false
+stats = "none"
+status = "dot"
+rows = "single"

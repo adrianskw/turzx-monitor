@@ -217,6 +217,33 @@ These come from iterating on the real panel. Keep them when adding widgets.
   widget.
 - **network.** Removed from the default layout; the code is kept.
 
+- **agentlog.** Token accounting lives in `turzx/agentlog.py` as one shared
+  `TokenLog`. Both `agents` (session list) and `burn` (rate and total) read
+  from it, and `refresh()` skips if another widget refreshed within 2 s, so each
+  log is parsed once. The burn rate is a rolling average (tokens in the last
+  `rate_minutes`, divided by that). Today's figure is a running sum since
+  midnight, not an average.
+- **Rolling means.** CPU total, per-core, temperature and power; GPU
+  utilization, temperature and power; and RAM % are displayed as rolling means
+  over `smooth` seconds (default 2), so readouts don't jitter every refresh.
+  The history graphs are smoothed too (`graph_smooth`, default 2 s). They
+  were raw at first so spikes would show, but that read as too jittery on the
+  panel. Network rates have their own 2-sample mean. The token burn rate stays a
+  5-minute window: tokens arrive in bursts, so a 2 s window would swing between 0
+  and huge values.
+
+## Dense vertical alternative
+
+The `dense-vertical` preset is an alternative to the `compact`
+layout. It divides the 480 px screen into 120 / 72 / 80 / 208 px rows. The top
+row uses five vertical forecast entries so the date and clock can shrink while
+weather remains readable. CPU, GPU, and RAM use small separate icons and put
+their graphs or bars below the numbers. The two usage providers have separate
+80 px cards. A full-width agent card combines token totals and session rows;
+when no more than three sessions are active, it draws larger CPU/GPU histories
+from the already sampled hardware widgets. Dense readings allow `100%` rather
+than showing the capped `99%` used by older layouts.
+
 ## Ideas not yet done
 
 - Per-core bars could use 5 % steps (27 px wide bars allow it).

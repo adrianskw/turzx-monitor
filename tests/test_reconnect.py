@@ -1,10 +1,15 @@
 """Connection failures should release the port and allow a clean shutdown."""
 
 import unittest
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
-from turzx.app import App
+from PIL import Image
+
+from turzx.app import App, Slot
 from turzx.driver import TurzxDisplay
+from turzx.widget import Widget
+from turzx.widgets.clock_weather import ClockWeather
 
 
 class DisplayConnectionTests(unittest.TestCase):
@@ -45,9 +50,45 @@ class ReconnectTests(unittest.TestCase):
         with patch.object(app, "connect", side_effect=OSError("missing")), patch.object(
             app, "_reconnect", side_effect=stop
         ), patch.object(app, "flush") as flush:
-            app.run(once=True)
+            with self.assertLogs("turzx", level="ERROR"):
+                app.run(once=True)
 
         flush.assert_not_called()
+
+
+class PreviewTests(unittest.TestCase):
+    def test_once_draws_updated_widget(self):
+        class ColorWidget(Widget):
+            def update(self):
+                self.color = (255, 0, 0)
+
+            def draw(self, draw, width, height):
+                draw.rectangle((0, 0, width - 1, height - 1), fill=self.color)
+
+        with TemporaryDirectory() as directory:
+            path = f"{directory}/preview.png"
+            app = App({}, [Slot(ColorWidget(), (0, 0, 10, 10))], path)
+            try:
+                app.run(once=True)
+                with Image.open(path) as image:
+                    self.assertEqual(image.getpixel((5, 5)), (255, 0, 0))
+            finally:
+                app.pool.shutdown(wait=True)
+
+    def test_once_waits_for_composite_weather_update(self):
+        widget = ClockWeather(latitude=0, longitude=0)
+        calls = []
+
+        def fetch():
+            calls.append("weather")
+
+        with TemporaryDirectory() as directory, patch.object(widget.weather, "update", side_effect=fetch):
+            app = App({}, [Slot(widget, (0, 0, 800, 190))], f"{directory}/preview.png")
+            try:
+                app.run(once=True)
+                self.assertEqual(calls, ["weather"])
+            finally:
+                app.pool.shutdown(wait=True)
 
 
 if __name__ == "__main__":

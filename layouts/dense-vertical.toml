@@ -1,0 +1,76 @@
+# Dense alternative: 120 px clock/current weather/five vertical forecast rows,
+# 72 px hardware readings, 80 px side-by-side usage limits, and a full-width
+# session area. With up to three sessions, spare space shows CPU/GPU history.
+#
+# Saved for later (review 2026-09-23). Already inherited from shared code: 3-significant-
+# digit counts (186K, 123M), reset countdowns of at most 5 chars ("23h", never "not s"),
+# pace tick at 0 % before a window starts. To do before using it:
+#   - bigger type: the time (56 px) and temperature (65 px) are hard to read at a glance
+#   - drop the "5h"/"7d" labels (use the thick/thin rows from compact)
+#   - drop the divider lines in the weather card and the "CPU · 60s" graph labels
+#   - replace the filler CPU/GPU graphs (they repeat the ones behind the stat lines)
+#   - use `stale = "icon"` instead of "updated Xm ago" text
+#   - keep: full-width session rows, the session count, stress-proof sizing
+
+[display]
+port = "auto"
+brightness = 60
+dim_brightness = 10
+follow_session = true
+flip = false
+theme = "current"
+
+[[widget]]
+type = "clock_weather"
+box = [0, 0, 800, 120]
+style = "dense"
+units = "imperial"
+hours = 5
+
+[[widget]]
+type = "cpu"
+box = [0, 120, 319, 72]
+style = "dense"
+label = "\U000F0EE0"
+temp_unit = "°"
+temp_warn = 75
+temp_crit = 85
+power_warn = 60
+power_crit = 80
+
+[[widget]]
+type = "gpu"
+box = [319, 120, 319, 72]
+style = "dense"
+label = "\U000F0FB2"
+temp_unit = "°"
+temp_warn = 75
+temp_crit = 83
+power_warn = 180
+power_crit = 210
+
+[[widget]]
+type = "memory"
+box = [638, 120, 162, 72]
+style = "dense"
+label = "\U000F035B"
+
+[[widget]]
+type = "ai_usage"
+box = [0, 192, 400, 80]
+style = "dense"
+providers = ["claude"]
+
+[[widget]]
+type = "ai_usage"
+box = [400, 192, 400, 80]
+style = "dense"
+providers = ["codex"]
+
+[[widget]]
+type = "agents"
+box = [0, 272, 800, 208]
+style = "dense"
+status = "dot"
+cache_ring = true
+show_history = true

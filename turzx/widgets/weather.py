@@ -1,5 +1,7 @@
 import json
+import time
 import urllib.request
+from dataclasses import dataclass
 from datetime import datetime
 
 from turzx import theme as t
@@ -18,12 +20,31 @@ CODES = {
     95: ("\U000F0593", "Thunderstorm"), 96: ("\U000F0593", "Thunder + hail"), 99: ("\U000F0593", "Thunder + hail"),
 }
 NIGHT_CLEAR = "\U000F0594"
-HOURS = 5  # hourly forecast columns
+NIGHT_PARTLY_CLOUDY = "\U000F0F31"
+HOURS = 5  # hourly forecast columns shown by this widget
+FORECAST_HOURS = 12  # fetched, so layouts can show more (clock_weather `hours`)
+
+
+@dataclass(frozen=True)
+class WeatherSnapshot:
+    temperature: float
+    humidity: float
+    code: int
+    is_day: int
+    high: float
+    low: float
+    hours: tuple[tuple[datetime, int, int, float], ...]
+    unit: str
+    fetched_at: float
 
 
 def glyph(code: int, is_day: int) -> str:
     icon = CODES.get(code, ("\U000F0590", ""))[0]
-    return NIGHT_CLEAR if code <= 1 and not is_day else icon
+    if not is_day and code == 0:
+        return NIGHT_CLEAR
+    if not is_day and code in (1, 2):
+        return NIGHT_PARTLY_CLOUDY
+    return icon
 
 
 @register("weather")
@@ -34,15 +55,22 @@ class Weather(Widget):
 
     def __init__(self, **options):
         super().__init__(**options)
-        self.current = None
-        self.hours = []
-        self.error = None if "latitude" in options else "set latitude/longitude in layout.toml"
+        self.snapshot: WeatherSnapshot | None = None
+        self.error = None if "latitude" in options and "longitude" in options else "set latitude/longitude in layout.toml"
+        self.preview_now: float | None = None
+
+    def freshness_text(self, snapshot: WeatherSnapshot) -> str | None:
+        now = self.preview_now if self.preview_now is not None else time.time()
+        age = max(0, now - snapshot.fetched_at)
+        if self.error or age >= 2 * self.interval:
+            return f"updated {t.duration_text(age)} ago"
+        return None
 
     def next_delay(self):
         return 60.0 if self.error else self.interval
 
     def update(self):
-        if "latitude" not in self.options:
+        if "latitude" not in self.options or "longitude" not in self.options:
             return
         imperial = self.options.get("units") == "imperial"
         url = (
@@ -50,44 +78,58 @@ class Weather(Widget):
             f"?latitude={self.options['latitude']}&longitude={self.options['longitude']}"
             "&current=temperature_2m,relative_humidity_2m,weather_code,is_day"
             "&daily=temperature_2m_max,temperature_2m_min&forecast_days=2&timezone=auto"
-            f"&hourly=temperature_2m,weather_code,is_day&forecast_hours={HOURS + 1}"
+            f"&hourly=temperature_2m,weather_code,is_day&forecast_hours={FORECAST_HOURS + 1}"
             + ("&temperature_unit=fahrenheit" if imperial else "")
         )
         try:
             with urllib.request.urlopen(url, timeout=15) as r:
                 data = json.load(r)
-            self.current, self.daily = data["current"], data["daily"]
+            current, daily = data["current"], data["daily"]
             hourly = data["hourly"]
-            now = data["current"]["time"]
-            self.hours = [
-                (datetime.fromisoformat(ts), hourly["weather_code"][i], hourly["is_day"][i], hourly["temperature_2m"][i])
+            now = current["time"]
+            hours = tuple(
+                (datetime.fromisoformat(ts), int(hourly["weather_code"][i]),
+                 int(hourly["is_day"][i]), float(hourly["temperature_2m"][i]))
                 for i, ts in enumerate(hourly["time"]) if ts > now
-            ][:HOURS]
-            self.unit = "°F" if imperial else "°C"
+            )[:FORECAST_HOURS]
+            snapshot = WeatherSnapshot(
+                temperature=float(current["temperature_2m"]),
+                humidity=float(current["relative_humidity_2m"]),
+                code=int(current["weather_code"]),
+                is_day=int(current["is_day"]),
+                high=float(daily["temperature_2m_max"][0]),
+                low=float(daily["temperature_2m_min"][0]),
+                hours=hours,
+                unit="°F" if imperial else "°C",
+                fetched_at=time.time(),
+            )
+            self.snapshot = snapshot
             self.error = None
         except Exception as e:
             self.error = f"weather: {type(e).__name__}"
 
     def draw(self, d, w, h):
         t.card(d, w, h)
-        if self.current is None:
+        snapshot = self.snapshot
+        if snapshot is None:
             d.text((t.PAD, 14), self.error or "loading weather…", font=t.font(t.BODY), fill=t.MUTED)
             return
-        c = self.current
         # current conditions: icon + temp (right-aligned so 100°+ grows left), hi/lo + humidity
-        d.text((t.PAD, 4), glyph(c["weather_code"], c["is_day"]), font=t.font(76), fill=t.ORANGE)
-        t.text_right(d, 250, -8, f"{c['temperature_2m']:.0f}°", t.font(80, "bold"), t.TEXT)
-        hi, lo = self.daily["temperature_2m_max"][0], self.daily["temperature_2m_min"][0]
+        d.text((t.PAD, 4), glyph(snapshot.code, snapshot.is_day), font=t.font(76), fill=t.ORANGE)
+        t.text_right(d, 250, -8, f"{snapshot.temperature:.0f}°", t.font(80, "bold"), t.TEXT)
         fb = t.font(22, "bold")
-        t.fields_right(d, w - t.PAD, 10, [(f"↑{hi:.0f}°", t.RED), (f"↓{lo:.0f}°", t.CYAN)], fb, gap=" ")
-        t.text_right(d, w - t.PAD, 44, f"\U000F058E{t.pct_text(c['relative_humidity_2m'])}", t.font(20), t.MUTED)
+        t.fields_right(d, w - t.PAD, 10, [(f"↑{snapshot.high:.0f}°", t.RED), (f"↓{snapshot.low:.0f}°", t.CYAN)], fb, gap=" ")
+        t.text_right(d, w - t.PAD, 44, f"\U000F058E{t.pct_text(snapshot.humidity)}", t.font(20), t.MUTED)
+        if age_text := self.freshness_text(snapshot):
+            d.text((t.PAD, 74), age_text, font=t.font(14), fill=t.MUTED)
         # hourly strip
-        if not self.hours:
+        hours = snapshot.hours[:HOURS]
+        if not hours:
             return
         top = 92
-        col = (w - 2 * t.PAD) / len(self.hours)
+        col = (w - 2 * t.PAD) / len(hours)
         small, icon_f, temp_f = t.font(16, "bold"), t.font(26), t.font(21, "bold")
-        for i, (when, code, is_day, temp) in enumerate(self.hours):
+        for i, (when, code, is_day, temp) in enumerate(hours):
             cx = t.PAD + i * col + col / 2
             label = when.strftime("%-I%p").lower()
             d.text((cx - d.textlength(label, font=small) / 2, top), label, font=small, fill=t.MUTED)

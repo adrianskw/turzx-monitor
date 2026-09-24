@@ -36,7 +36,11 @@ ROLES = {
 
 
 def _hex(c: str) -> tuple[int, int, int]:
-    c = c.lstrip("#")
+    if not isinstance(c, str):
+        raise ValueError(f"theme color must be a hex string, got {c!r}")
+    c = c.removeprefix("#")
+    if len(c) != 6:
+        raise ValueError(f"theme color must have six hex digits, got {c!r}")
     return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))
 
 
@@ -53,10 +57,10 @@ def theme_path(name: str) -> Path:
 def load(name: str) -> None:
     """Adopt the palette of an Omarchy theme, e.g. "tokyo-night" or "current"."""
     colors = tomllib.loads(theme_path(name).read_text())
-    g = globals()
-    for role, key in ROLES.items():
-        if key in colors:
-            g[role] = _hex(colors[key])
+    # Parse every role before publishing any colors, so a broken edit leaves the
+    # previous palette intact while the theme file is being rewritten.
+    palette = {role: _hex(colors[key]) for role, key in ROLES.items() if key in colors}
+    globals().update(palette)
 
 
 FONT_DIR = "/usr/share/fonts/TTF"
@@ -82,7 +86,7 @@ def _icon(name: str, size: int) -> Image.Image:
 def icon(d: ImageDraw.ImageDraw, x: int, y: int, name: str, size: int) -> None:
     """Paste turzx/assets/<name>.png onto the widget image, alpha-blended."""
     img = _icon(name, size)
-    d._image.paste(img, (x, y), img)  # ImageDraw keeps a reference to its target image
+    d._image.paste(img, (round(x), round(y)), img)  # ImageDraw keeps a reference to its target image
 
 
 def level_color(pct: float) -> tuple[int, int, int]:
@@ -160,13 +164,46 @@ def sparkline(d: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, values, vm
     values = list(values)
     if len(values) < 2:
         return
+    x, y, w, h = round(x), round(y), round(w), round(h)
     vmax = max(vmax, max(values), 1e-9)
-    step = w / (len(values) - 1)
-    pts = [(x + i * step, y + h - (v / vmax) * h) for i, v in enumerate(values)]
     line = blend(CARD, color, 0.5 if dim else 1.0)
     fill = blend(CARD, color, 0.15 if dim else 0.33)
-    d.polygon([(x, y + h), *pts, (x + w, y + h)], fill=fill)
-    d.line(pts, fill=line, width=2)
+    # PIL doesn't anti-alias lines/polygons: draw at SS× over the existing pixels, then box-downsample.
+    SS = 4
+    target = d._image
+    layer = target.crop((x, y - 2, x + w, y + h + 2)).resize((w * SS, (h + 4) * SS), Image.NEAREST)
+    ld = ImageDraw.Draw(layer)
+    step = w * SS / (len(values) - 1)
+    base = (h + 2) * SS
+    pts = [(i * step, base - (v / vmax) * h * SS) for i, v in enumerate(values)]
+    ld.polygon([(0, base), *pts, (w * SS, base)], fill=fill)
+    ld.line(pts, fill=line, width=2 * SS, joint="curve")
+    target.paste(layer.resize((w, h + 4), Image.BOX), (x, y - 2))
+
+
+def ring(d: ImageDraw.ImageDraw, cx: float, cy: float, r: float, width: float, pct: float | None,
+         color, track=None) -> None:
+    """Annulus gauge filled clockwise from 12 o'clock (anti-aliased by supersampling).
+    pct=None draws only the track (no data)."""
+    SS = 4
+    box = (round(cx - r - 1), round(cy - r - 1), round(cx + r + 1), round(cy + r + 1))
+    target = d._image
+    size = (box[2] - box[0], box[3] - box[1])
+    layer = target.crop(box).resize((size[0] * SS, size[1] * SS), Image.NEAREST)
+    ld = ImageDraw.Draw(layer)
+    o = SS  # 1 px margin in layer coordinates
+    bounds = (o, o, layer.width - o - 1, layer.height - o - 1)
+    ld.arc(bounds, 0, 360, fill=track or TRACK, width=round(width * SS))
+    if pct:
+        ld.arc(bounds, -90, -90 + 360 * max(0.0, min(100.0, pct)) / 100, fill=color, width=round(width * SS))
+    target.paste(layer.resize(size, Image.BOX), box[:2])
+
+
+def cache_color(pct: float | None):
+    """Cache hit health: green >= 90 %, yellow >= 70 %, red below; muted when unknown."""
+    if pct is None:
+        return MUTED
+    return GREEN if pct >= 90 else YELLOW if pct >= 70 else RED
 
 
 def pct_text(v: float) -> str:
@@ -176,6 +213,26 @@ def pct_text(v: float) -> str:
 
 # Fixed-width number labels: values are capped to a digit budget and space-padded
 # (the font is monospace), so neighbouring text never shifts when a digit appears.
+class Rolling:
+    """Rolling mean over the last n samples, so readouts don't jitter every refresh."""
+
+    def __init__(self, n: int):
+        from collections import deque
+        self.values = deque(maxlen=max(1, int(n)))
+
+    def add(self, v: float) -> float:
+        self.values.append(v)
+        return sum(self.values) / len(self.values)
+
+
+def smooth_samples(options: dict, interval: float, default_seconds: float = 2.0) -> int:
+    """Window size in samples for a widget's `smooth` option (seconds; 0 disables)."""
+    seconds = float(options.get("smooth", default_seconds))
+    if seconds < 0:
+        raise ValueError("smooth must be >= 0 seconds")
+    return max(1, round(seconds / interval))
+
+
 def capped(v: float, digits: int) -> str:
     return f"{max(0, min(10 ** digits - 1, round(v))):>{digits}}"
 
@@ -219,16 +276,60 @@ def stat_line(d: ImageDraw.ImageDraw, w: int, y: int, label: str, fields, size: 
     fields_right(d, w - PAD, y, fields, f, gap=gap)
 
 
+ONE_SQUEEZE = 0.62  # width of a condensed leading "1" in clock times
+
+
+def time_right(d: ImageDraw.ImageDraw, right: float, y: float, text: str, fnt, fill) -> None:
+    """Right-aligned clock time whose leading "1" (10-12 o'clock) is drawn condensed, so the
+    space reserved for a two-digit hour is only as wide as a narrow "1", not a full digit."""
+    if not (len(text) == 5 and text[0] == "1"):
+        text_right(d, right, y, text, fnt, fill)
+        return
+    rest = text[1:]
+    rest_w = d.textlength(rest, font=fnt)
+    d.text((right - rest_w, y), rest, font=fnt, fill=fill)
+    adv = fnt.getlength("1")
+    glyph = Image.new("RGBA", (round(adv), round(fnt.size * 1.3)), (0, 0, 0, 0))
+    ImageDraw.Draw(glyph).text((0, 0), "1", font=fnt, fill=fill)
+    glyph = glyph.resize((round(adv * ONE_SQUEEZE), glyph.height), Image.LANCZOS)
+    d._image.paste(glyph, (round(right - rest_w - glyph.width - 2), round(y)), glyph)
+
+
+def time_width(d: ImageDraw.ImageDraw, fnt) -> float:
+    """Widest time_right() output ("12:59" with its condensed 1)."""
+    return d.textlength("2:59", font=fnt) + fnt.getlength("1") * ONE_SQUEEZE + 2
+
+
 def text_right(d: ImageDraw.ImageDraw, right: int, y: int, text: str, fnt, fill=TEXT) -> None:
     d.text((right - d.textlength(text, font=fnt), y), text, font=fnt, fill=fill)
 
 
 def human_count(n: float) -> str:
-    """12345 -> '12.3K', 4.2e6 -> '4.2M'."""
-    for unit, size in (("B", 1e9), ("M", 1e6), ("K", 1e3)):
+    """At most 3 significant digits and 5 chars: 3.4M, 18.5K, 185K, 123M, 870."""
+    units = (("B", 1e9), ("M", 1e6), ("K", 1e3))
+    for i, (unit, size) in enumerate(units):
         if n >= size:
-            return f"{n / size:.1f}{unit}"
-    return f"{n:.0f}"
+            v = n / size
+            s = f"{v:.1f}" if v < 99.95 else f"{v:.0f}"
+            if s == "1000" and i > 0:  # 999.6K rounds up: promote to the next unit
+                return f"1.0{units[i - 1][0]}"
+            return s + unit
+    return f"{n:.0f}" if n < 999.5 else "1.0K"
+
+
+STALE = "\U000F0955"  # clock with "!": data is older than it should be
+
+
+def stale_mark(d: ImageDraw.ImageDraw, x: float, y: float, size: int = 22) -> None:
+    """Small yellow clock-alert glyph used instead of 'updated Xm ago' text."""
+    d.text((x, y), STALE, font=font(size), fill=YELLOW)
+
+
+def fit_font(d: ImageDraw.ImageDraw, text: str, size: int, max_width: float, weight: str = "bold"):
+    """Largest font <= size whose rendering of text fits max_width (shrink-to-fit)."""
+    while size > 8 and d.textlength(text, font=font(size, weight)) > max_width:
+        size -= 2
+    return font(size, weight)
 
 
 def duration_text(seconds: float) -> str:

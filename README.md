@@ -21,9 +21,12 @@ sudo cp 70-turzx.rules /etc/udev/rules.d/ && sudo udevadm control --reload && su
 ```sh
 .venv/bin/turzx                          # drive the screen with layouts/default.toml
 .venv/bin/turzx --layout compact         # use layouts/compact.toml
+.venv/bin/turzx --layout compact2        # compact with a short side-by-side top band
+.venv/bin/turzx --layout dense-vertical   # smaller clock, five stacked forecast hours
 .venv/bin/turzx --list                   # list layout presets and widget types
 .venv/bin/turzx --preview                # render to preview.png instead of the hardware (live)
 .venv/bin/turzx --preview --once         # render one frame and exit
+.venv/bin/turzx --preview --once --sample-data  # fixed clock and sample values; no live data fetches
 .venv/bin/turzx -c path/to/file.toml     # use any layout file
 ```
 
@@ -40,7 +43,7 @@ To make the service use another layout persistently:
 
 ```sh
 systemctl --user edit turzx              # add:  [Service]
-                                         #       Environment=TURZX_LAYOUT=compact
+                                         #       Environment=TURZX_LAYOUT=compact2
 systemctl --user restart turzx
 ```
 
@@ -51,11 +54,15 @@ A layout is a TOML file in `layouts/`. It has a `[display]` table and a list of
 on the 800×480 canvas, and any widget options.
 
 To try a variant, copy `layouts/default.toml`, edit the copy, and check it with
-`--preview --once` before running it on the screen.
+`--preview --once --sample-data` before running it on the screen. Sample data is
+available for the built-in widgets, so repeated renders use the same clock and
+readings. The configured theme still determines the colors.
 
 Several widgets can share one card. Add a `[[card]]` entry with its own `box`,
 then give each widget inside it `frame = false`. The default layout uses this
 for the bottom row: AI limits on the left and agents on the right, in one card.
+Layout loading checks that boxes fit the 800×480 screen, widgets do not overlap,
+frameless widgets sit inside a shared card, and update intervals are positive.
 
 ### `[display]` options
 
@@ -70,19 +77,29 @@ for the bottom row: AI limits on the left and agents on the right, in one card.
 
 ### Widgets
 
-Every widget also accepts `interval`: the number of seconds between data refreshes. `color` options take a palette role name: `accent`, `cyan`, `magenta`, `green`, `yellow`, `orange` or `red`.
+Every widget also accepts `interval`: the number of seconds between data refreshes. `cpu`, `gpu` and `memory` accept `smooth`: a rolling-mean window in seconds for the displayed numbers (default 2, 0 disables). `cpu` and `gpu` also accept `graph_smooth` for their history graphs (default 2, 0 = raw spikes). `color` options take a palette role name: `accent`, `cyan`, `magenta`, `green`, `yellow`, `orange` or `red`.
 
 | type | options | shows |
 |---|---|---|
-| `clock_weather` | all `clock` + `weather` options | full-width card: time and date on the left; current weather and a 5-hour forecast on the right |
+| `clock_weather` | all `clock` + `weather` options, `icon_behind`, `ampm_behind`, `hourly_icon_behind`, `stale` (`text` / `icon`), `hours` (5), `humidity_min` (0), `temp_size` (90), `hilo_size` (24), `date_size` (38), `time_size` (132), `condense_one` (true), `arrangement` (`split` / `row`: everything side by side in one short band), `style = "dense"` | full-width card: time and date on the left; current weather and a 5-hour forecast on the right |
 | `clock` | `format` (strftime, default `%-I:%M`), `ampm` | time, AM/PM, date |
 | `weather` | `latitude`, `longitude`, `units` (`imperial`/`metric`) | current conditions + 5-hour forecast (Open-Meteo) |
-| `cpu` | `label`, `color`, `temp_warn`, `temp_crit`, `power_warn`, `power_crit` | one-line load / temperature / package power over a history graph, per-core bars |
-| `gpu` | `index`, `label`, `color`, `temp_warn`, `temp_crit`, `power_warn`, `power_crit` | one-line NVIDIA load / temperature / power over a history graph, VRAM bar |
-| `ai_usage` | `providers` (`claude`, `codex`) | 5-hour / 7-day limits with pace markers |
-| `memory` | `color` | one-line RAM % with a usage bar and GB used |
-| `agents` | `active_minutes` (30), `working_seconds` (60), `rate_minutes` (5) | token burn (tok/min, today) and active Claude Code / Codex sessions |
-| `network` | `interface` (default: all physical), `smooth` (samples, 3) | download/upload rate, never below the K unit (not in the default layout) |
+| `cpu` | `label`, `color`, `size` (30), `temp_unit` (`°C`), `watt_digits` (2), `temp_warn`, `temp_crit`, `power_warn`, `power_crit`, `style = "dense"` | one-line load / temperature / package power over a history graph, per-core bars |
+| `gpu` | `index`, `label`, `color`, `size` (30), `temp_unit` (`°C`), `temp_warn`, `temp_crit`, `power_warn`, `power_crit`, `style = "dense"` | one-line NVIDIA load / temperature / power over a history graph, VRAM bar |
+| `ai_usage` | `providers` (`claude`, `codex`), `resets` (`always` / `soon`), `window_labels` (true; false = thick 5h / thin 7d rows), `stale` (`text` / `icon`), `style = "dense"` (one provider per 80 px card) | 5-hour / 7-day limits with pace markers |
+| `memory` | `color`, `label`, `size` (30), `style = "dense"` | one-line RAM %, used/total, full-width bar |
+| `agents` | `active_minutes` (30), `working_seconds` (60), `rate_minutes` (5), `stats` (`top` / `left` / `none`), `rows` (`double` / `single`), `status` (`text` / `dot`), `pulse` (10 s breathing cycle), `pulse_step` (1 s redraw), `cache_ring` (per-session cache-hit ring), `style = "dense"`, `show_history` | token burn (tok/min, today) and active Claude Code / Codex sessions |
+| `burn` | `rate_minutes` (5), `cache_ring` | one line: rolling tokens/min, rolling cache-hit ring, today's running total |
+| `network` | `interface` (default: all physical), `smooth` (samples, 2) | download/upload rate, never below the K unit (not in the default layout) |
+
+Presets: `default` uses words and 30 px stat lines. `compact` uses icons,
+weather symbols behind temperatures, seven hourly columns, and a breathing
+working dot. `compact2` keeps that style but puts the date in a column and everything
+in the top band side by side (140 px), giving the CPU/GPU/RAM row more height.
+`dense-vertical` uses a 120 px header with five vertically stacked forecast
+hours, a 72 px hardware row, side-by-side AI cards, and full-width single-line
+session rows. When three or fewer sessions are active, it uses the spare space
+for larger CPU/GPU history graphs. [See the sample preview](docs/dense-vertical.png).
 
 ## Writing a widget
 
@@ -99,6 +116,8 @@ class Hello(Widget):
     def update(self):           # runs on a worker thread; fetch data here
         self.msg = self.options.get("text", "hi")
 
+    frame_interval = None       # set (seconds) to redraw for animation between updates
+
     def draw(self, d, w, h):    # d is a PIL ImageDraw sized w×h
         y = t.card(d, w, h, "HELLO")
         d.text((t.PAD, y), self.msg, font=t.font(t.BODY), fill=t.TEXT)
@@ -114,6 +133,12 @@ widget follows the same visual rules as the others. The rules are described in
 DESIGN.md.
 
 ## Tools
+
+- `scripts/preview.py` renders what the screen should show to `preview.png`,
+  without the hardware. By default it uses fixed sample data (about 0.1 s,
+  identical every run, good for before/after comparisons). `--live 6` uses real
+  data collected for 6 seconds so graphs fill in. `-l <layout>` picks a preset,
+  and `--crop X,Y,W,H -z 3` zooms into one region to check pixel detail.
 
 - `scripts/colortest.py` sends identical color swatches through the full-frame and
   partial-update encodings, to check the pixel format. Stop the service before running it.

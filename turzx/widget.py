@@ -11,6 +11,7 @@ with @register("name"), and reference it by name in layout.toml.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from PIL import ImageDraw
@@ -32,8 +33,17 @@ class Widget:
 
     def __init__(self, **options: Any):
         self.options = options
-        if "interval" in options:
-            self.interval = float(options["interval"])
+        value = options.get("interval", self.interval)
+        if isinstance(value, bool):
+            raise ValueError("interval must be a positive finite number")
+        try:
+            self.interval = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("interval must be a positive finite number") from exc
+        if not math.isfinite(self.interval) or self.interval <= 0:
+            raise ValueError("interval must be a positive finite number")
+
+    frame_interval: float | None = None  # seconds between redraws for animation (None = only after update)
 
     def next_delay(self) -> float:
         """Seconds until the next update(); override to e.g. retry sooner after an error."""
@@ -41,6 +51,10 @@ class Widget:
 
     def update(self) -> None:
         """Fetch data. Runs on a worker thread; store results on self."""
+
+    def update_once(self) -> None:
+        """Fetch data for a one-shot render; composite widgets may wait for their sources."""
+        self.update()
 
     def draw(self, d: ImageDraw.ImageDraw, w: int, h: int) -> None:
         raise NotImplementedError
