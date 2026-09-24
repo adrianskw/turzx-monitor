@@ -207,7 +207,9 @@ def sparkline(d: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, values, vm
     ld = ImageDraw.Draw(layer)
     step = w * SS / (len(values) - 1)
     base = (h + 2) * SS
-    pts = [(i * step, base - (v / vmax) * h * SS) for i, v in enumerate(values)]
+    half = SS  # half the 2 px line: keep the whole line inside the graph, so at 0 % its
+    # bottom edge sits on the fill's baseline instead of hanging 1 px below it
+    pts = [(i * step, base - half - (v / vmax) * (h * SS - 2 * half)) for i, v in enumerate(values)]
     ld.polygon([(0, base), *pts, (w * SS, base)], fill=fill)
     ld.line(pts, fill=line, width=2 * SS, joint="curve")
     target.paste(layer.resize((w, h + 4), Image.BOX), (x, y - 2))
@@ -333,10 +335,39 @@ def fields_right(d: ImageDraw.ImageDraw, right: float, y: int, fields, fnt, gap:
         right -= d.textlength(text + gap, font=fnt)
 
 
+ICON_BOX = 26  # longest side, in px, of a card's icon label
+
+
+def is_glyph(label: str) -> bool:
+    """A single private-use character: a Nerd Font icon rather than a word."""
+    return len(label) == 1 and (0xE000 <= ord(label) <= 0xF8FF or ord(label) >= 0xF0000)
+
+
+def glyph_icon(d: ImageDraw.ImageDraw, x: float, cy: float, glyph: str, box: int = ICON_BOX,
+               fill=None, centre_x: bool = False) -> None:
+    """Draw an icon glyph scaled so its ink's longest side is `box` px, whatever icon set it
+    comes from, with the ink vertically centred on cy and starting at x (or centred on x)."""
+    x0, y0, x1, y1 = d.textbbox((0, 0), glyph, font=font(100))
+    f = font(max(6, round(100 * box / max(x1 - x0, y1 - y0, 1))))
+    x0, y0, x1, y1 = d.textbbox((0, 0), glyph, font=f)
+    left = x - (x0 + x1) / 2 if centre_x else x - x0
+    d.text((left, cy - (y0 + y1) / 2), glyph, font=f, fill=fill or MUTED)
+
+
+def headline_centre(y: int, size: int = 30) -> float:
+    """Vertical centre of the digits of a stat_line drawn at y."""
+    _, y0, _, y1 = ImageDraw.Draw(Image.new("L", (1, 1))).textbbox((0, y), "0", font=font(size, "bold"))
+    return (y0 + y1) / 2
+
+
 def stat_line(d: ImageDraw.ImageDraw, w: int, y: int, label: str, fields, size: int = 30, gap: str = " ") -> None:
-    """Card headline: label on the left, fixed-width colored readings right-aligned."""
+    """Card headline: label on the left, fixed-width colored readings right-aligned. An icon
+    label is drawn at a common size (ICON_BOX), centred on the digits."""
     f = font(size, "bold")
-    d.text((PAD, y), label, font=f, fill=MUTED)
+    if is_glyph(label):
+        glyph_icon(d, PAD, headline_centre(y, size), label)
+    else:
+        d.text((PAD, y), label, font=f, fill=MUTED)
     fields_right(d, w - PAD, y, fields, f, gap=gap)
 
 

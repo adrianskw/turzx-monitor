@@ -21,6 +21,8 @@ from turzx.app import App, Slot
 from turzx.driver import TurzxDisplay, _pixels
 from turzx.sample import populate
 from turzx.widgets.cpu import Cpu
+from turzx.widgets.agents import Agents
+from turzx.widgets.ai_usage import AiUsage, reset_text
 from turzx.widgets.forecast import Forecast
 from turzx.widgets.gpu import Gpu
 from turzx.widgets.weather import Weather, _CACHE, _CACHE_LOCK, _FETCH_LOCKS
@@ -96,6 +98,25 @@ class SensorTests(unittest.TestCase):
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_invalid_preview_path_fails_without_reconnect(self):
+        with TemporaryDirectory() as directory:
+            app = App({}, [], str(Path(directory) / "missing" / "preview.png"))
+            try:
+                with patch.object(app, "_reconnect") as reconnect, self.assertRaises(FileNotFoundError):
+                    app.run(once=True)
+                reconnect.assert_not_called()
+            finally:
+                app.pool.shutdown(wait=True)
+
+    def test_empty_preview_path_does_not_open_hardware(self):
+        app = App({}, [], "")
+        try:
+            with patch("turzx.app.TurzxDisplay") as hardware, self.assertRaises(ValueError):
+                app.run(once=True)
+            hardware.assert_not_called()
+        finally:
+            app.pool.shutdown(wait=True)
+
     def test_failed_session_future_does_not_escape_main_loop(self):
         app = App({}, [], None)
         failed = Future()
@@ -155,6 +176,56 @@ class RuntimeTests(unittest.TestCase):
                 log.refresh(max_age=0)
                 self.assertEqual(log.total_today(), 3)
                 self.assertEqual(len(log.events), 1)
+
+    def test_equal_size_in_place_rewrite_replaces_usage(self):
+        now = datetime.now().astimezone().isoformat()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "project" / "one.jsonl"
+            path.parent.mkdir()
+            def record(count):
+                return (json.dumps({"timestamp": now, "message": {"usage": {"input_tokens": count}}}) + "\n").encode()
+            path.write_bytes(record(100))
+            with patch("turzx.agentlog.CLAUDE_DIR", root), patch("turzx.agentlog.CODEX_DIR", root / "missing"):
+                log = TokenLog()
+                log.refresh(max_age=0)
+                previous_mtime = path.stat().st_mtime_ns
+                path.write_bytes(record(200))  # same size and inode
+                os.utime(path, ns=(previous_mtime + 1_000_000_000, previous_mtime + 1_000_000_000))
+                log.refresh(max_age=0)
+                self.assertEqual(log.total_today(), 200)
+                self.assertEqual(len(log.events), 1)
+                previous_mtime = path.stat().st_mtime_ns
+                time.sleep(0.01)
+                path.write_bytes(record(300))
+                os.utime(path, ns=(previous_mtime, previous_mtime))
+                log.refresh(max_age=0)
+                self.assertEqual(log.total_today(), 300)
+
+    def test_two_hour_rate_includes_older_events(self):
+        timestamp = (datetime.now().astimezone() - timedelta(minutes=90)).isoformat()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "project" / "one.jsonl"
+            path.parent.mkdir()
+            path.write_text(json.dumps({"timestamp": timestamp, "message": {"usage": {"input_tokens": 120}}}) + "\n")
+            with patch("turzx.agentlog.CLAUDE_DIR", root), patch("turzx.agentlog.CODEX_DIR", root / "missing"):
+                log = TokenLog()
+                log.refresh(max_age=0)
+                self.assertEqual(log.rate(120), 1)
+
+    def test_malformed_model_does_not_discard_usage(self):
+        now = datetime.now().astimezone().isoformat()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "project" / "one.jsonl"
+            path.parent.mkdir()
+            path.write_text(json.dumps({"timestamp": now, "type": "assistant", "message": {
+                "model": None, "usage": {"input_tokens": 25}}}) + "\n")
+            with patch("turzx.agentlog.CLAUDE_DIR", root), patch("turzx.agentlog.CODEX_DIR", root / "missing"):
+                log = TokenLog()
+                log.refresh(max_age=0)
+                self.assertEqual(log.total_today(), 25)
 
     def test_recent_yesterday_log_contributes_to_rate_after_midnight(self):
         next_day = (datetime.now().astimezone() + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)

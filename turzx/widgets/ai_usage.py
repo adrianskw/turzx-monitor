@@ -153,8 +153,58 @@ class AiUsage(Widget):
                 else:
                     d.text((bx, by + block - 13), age_text, font=t.font(12), fill=t.MUTED)
 
+    def _draw_stacked(self, d, w, h, y):
+        """Per provider: logo with "5h 43% | 7d 31%" on one line, then a thick 5h bar and a
+        thin 7d bar, each with its reset countdown in a right-hand column. The bars share one
+        width (one scale, so the pace ticks line up) and fill the rest of the card."""
+        f, small = t.font(22, "bold"), t.font(17)
+        logo = 28
+        right = w - t.PAD
+        bw = right - d.textlength("6d23h", font=small) - 12 - t.PAD
+        _, y0, _, y1 = d.textbbox((0, 0), "0%", font=f)
+        _, sy0, _, sy1 = d.textbbox((0, 0), "0", font=small)
+
+        def label(x, cy, text, fill):  # left-aligned header text centred on cy; returns its end
+            d.text((x, cy - (y0 + y1) / 2), text, font=f, fill=fill)
+            return x + d.textlength(text, font=f)
+
+        block = (h - 2 * y) / len(self.providers)
+        for i, p in enumerate(self.providers):
+            color = PROVIDERS[p][2]
+            top = y + i * block
+            head, row5, row7 = top + block * 0.22, top + block * 0.56, top + block * 0.82  # row centres
+            t.icon(d, t.PAD, round(head - logo / 2), p, logo)
+            val = self.data[p]
+            x = t.PAD + logo + 12
+            if not isinstance(val, tuple):
+                label(x, head, val, t.MUTED)
+                continue
+            five, seven, r5, r7 = val
+            pace5, pace7 = self._pace(p, r5, "5h"), self._pace(p, r7, "7d")
+            # "5h 43% | 7d 31%": labels muted; percents right-aligned in 2-digit slots so the
+            # separator and the 7d group never move
+            space, pct_w = d.textlength(" ", font=f), d.textlength("99%", font=f)
+            x = label(x, head, "5h", t.MUTED) + space + pct_w
+            t.text_right(d, x, head - (y0 + y1) / 2, t.pct_text(five), f, self._pct_color(five, pace5))
+            x = label(x + space, head, "|", t.TRACK) + space
+            x = label(x, head, "7d", t.MUTED) + space + pct_w
+            t.text_right(d, x, head - (y0 + y1) / 2, t.pct_text(seven), f, self._pct_color(seven, pace7))
+            for win, cy, bh, pct, pace, reset in (("5h", row5, 16, five, pace5, r5), ("7d", row7, 8, seven, pace7, r7)):
+                by = round(cy - bh / 2)
+                t.bar(d, t.PAD, by, bw, bh, pct, color)
+                if pace is not None:  # tick where even usage across the window would be
+                    mx = round(t.PAD + bw * pace / 100)
+                    d.rectangle((mx - 1, by - 4, mx, by + bh + 3), fill=t.TEXT)
+                if self.options.get("resets", "always") != "soon" or self._show_reset(reset, win):
+                    t.text_right(d, right, cy - (sy0 + sy1) / 2, reset_text(reset), small, t.MUTED)
+            if self.freshness_text(p):
+                t.stale_mark(d, t.PAD + logo - 12, round(head - logo / 2) - 6, 18)
+
     def draw(self, d, w, h):
         y = t.card(d, w, h)
+        if self.options.get("arrangement") == "stacked":
+            self._draw_stacked(d, w, h, y)
+            return
         if self.options.get("style") == "dense":
             self._draw_dense(d, w, h)
             return

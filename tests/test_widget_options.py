@@ -15,6 +15,7 @@ from turzx.sample import SAMPLE_NOW, populate
 from turzx.widgets.agents import Agents
 from turzx.widgets.ai_usage import AiUsage, reset_text
 from turzx.widgets.clock_weather import ClockWeather
+from turzx.widgets.memory import Memory
 from turzx.widgets.weather import glyph
 
 
@@ -48,6 +49,21 @@ class AnimationTests(unittest.TestCase):
 
 
 class AgentLayoutTests(unittest.TestCase):
+    def test_detail_options_are_validated_before_drawing(self):
+        for option in ({"detail_rows": "bad"}, {"detail_rows": -1},
+                       {"claude_window": "bad"}, {"claude_window": 0},
+                       {"name_weight": "heavy"}, {"name_weight": []}):
+            with self.subTest(option=option), self.assertRaises(ValueError):
+                Agents(stats="none", rows="single", **option)
+
+    def test_detailed_rows_fall_back_when_card_is_too_short(self):
+        widget = Agents(stats="none", rows="single", detail_rows=4)
+        populate(widget)
+        widget.active.append(widget.active[0])
+        with patch.object(widget, "_draw_detailed") as detailed:
+            widget.draw(ImageDraw.Draw(Image.new("RGB", (485, 210))), 485, 210)
+            detailed.assert_not_called()
+
     def test_text_status_does_not_overlap_name_or_cache_ring(self):
         for stats in ("none", "left"):
             for rings in (False, True):
@@ -73,6 +89,29 @@ class AgentLayoutTests(unittest.TestCase):
 
 
 class WeatherIconLayoutTests(unittest.TestCase):
+    def test_band_limits_hour_columns_under_three_digit_stress(self):
+        widget = ClockWeather(style="band", hours=8, units="imperial")
+        populate(widget)
+        snap = widget.weather.snapshot
+        widget.weather.snapshot = replace(
+            snap, temperature=107, high=112, low=-5, humidity=100,
+            hours=tuple((when, code, day, 107) for when, code, day, _ in snap.hours),
+        )
+        draw = ImageDraw.Draw(Image.new("RGB", (800, 120)))
+        with patch.object(draw, "text", wraps=draw.text) as text:
+            widget.draw(draw, 800, 120)
+        temperatures = [call for call in text.call_args_list if call.args[1] == "107"]
+        self.assertGreater(len(temperatures), 0)
+        self.assertLess(len(temperatures), 8)
+        boxes = [draw.textbbox(call.args[0], call.args[1], font=call.kwargs["font"]) for call in temperatures]
+        self.assertTrue(all(0 <= box[0] < box[2] <= 800 for box in boxes))
+        self.assertTrue(all(a[2] <= b[0] for a, b in zip(boxes, boxes[1:])))
+
+    def test_invalid_band_options_fail_at_load(self):
+        for option in ({"hours": -1}, {"gap": -1}, {"time_size": 0}, {"temp_size": "large"}):
+            with self.subTest(option=option), self.assertRaises(ValueError):
+                ClockWeather(style="band", **option)
+
     def test_left_icon_stays_clear_of_two_and_three_digit_temperatures(self):
         widget = ClockWeather(arrangement="row", show="weather", forecast=False,
                               icon_left=True, temp_size=84, hilo_size=20)
@@ -95,7 +134,33 @@ class WeatherIconLayoutTests(unittest.TestCase):
                 self.assertEqual(icon.kwargs["fill"], t.ORANGE)
 
 
+class MemoryLayoutTests(unittest.TestCase):
+    def test_vertical_icon_keeps_configured_size(self):
+        widget = Memory(style="vertical", size=20)
+        populate(widget)
+        draw = ImageDraw.Draw(Image.new("RGB", (50, 160)))
+        with patch.object(t, "glyph_icon", wraps=t.glyph_icon) as glyph_icon:
+            widget.draw(draw, 50, 160)
+        self.assertEqual(glyph_icon.call_args.args[4], 20)
+
+
 class UsageLayoutTests(unittest.TestCase):
+    def test_stacked_rows_honor_soon_resets(self):
+        widget = AiUsage(providers=["claude"], arrangement="stacked", resets="soon")
+        populate(widget)
+        draw = ImageDraw.Draw(Image.new("RGB", (315, 210)))
+        with patch.object(draw, "text", wraps=draw.text) as text:
+            widget.draw(draw, 315, 210)
+        labels = {call.args[1] for call in text.call_args_list}
+        self.assertNotIn(reset_text("2h42m"), labels)
+        self.assertNotIn(reset_text("4d06h"), labels)
+        widget.data["claude"] = (43, 31, "59m", "23h")
+        with patch.object(draw, "text", wraps=draw.text) as text:
+            widget.draw(draw, 315, 210)
+        labels = {call.args[1] for call in text.call_args_list}
+        self.assertIn(reset_text("59m"), labels)
+        self.assertIn(reset_text("23h"), labels)
+
     def test_unlabeled_rows_honor_reset_mode_and_window_thresholds(self):
         for resets in ("always", "soon"):
             for r5, r7, expected_soon in (

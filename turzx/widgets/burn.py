@@ -16,8 +16,8 @@ class Burn(Widget):
     def __init__(self, **options):
         super().__init__(**options)
         self.rate_minutes = float(options.get("rate_minutes", 5))
-        if not math.isfinite(self.rate_minutes) or self.rate_minutes <= 0:
-            raise ValueError("rate_minutes must be positive")
+        if not math.isfinite(self.rate_minutes) or not 0 < self.rate_minutes <= agentlog.MAX_RATE_MINUTES:
+            raise ValueError(f"rate_minutes must be between 0 and {agentlog.MAX_RATE_MINUTES}")
         self.rate = 0.0
         self.total_today = 0
         self.cache_hit: float | None = None

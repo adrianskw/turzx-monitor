@@ -9,6 +9,9 @@ from turzx.agentlog import Session
 from turzx.widget import Widget, register
 
 
+EFFORT = {"medium": "med"}  # short forms for the detail line; others fit as logged
+
+
 @register("agents")
 class Agents(Widget):
     interval = 5.0
@@ -19,8 +22,18 @@ class Agents(Widget):
         self.working_seconds = float(options.get("working_seconds", 60))
         self.rate_minutes = float(options.get("rate_minutes", 5))
         if (not all(map(math.isfinite, (self.active_minutes, self.working_seconds, self.rate_minutes))) or
-                self.active_minutes <= 0 or self.working_seconds < 0 or self.rate_minutes <= 0):
-            raise ValueError("active_minutes and rate_minutes must be positive; working_seconds cannot be negative")
+                not 0 < self.active_minutes <= agentlog.MAX_RATE_MINUTES or self.working_seconds < 0 or
+                not 0 < self.rate_minutes <= agentlog.MAX_RATE_MINUTES):
+            raise ValueError(f"active_minutes and rate_minutes must be between 0 and {agentlog.MAX_RATE_MINUTES}; working_seconds cannot be negative")
+        self.detail_rows = options.get("detail_rows", 0)
+        if type(self.detail_rows) is not int or self.detail_rows < 0:
+            raise ValueError("detail_rows must be a nonnegative integer")
+        self.claude_window = options.get("claude_window", 1_000_000)
+        if type(self.claude_window) is not int or self.claude_window <= 0:
+            raise ValueError("claude_window must be a positive integer")
+        self.name_weight = options.get("name_weight", "regular")
+        if not isinstance(self.name_weight, str) or self.name_weight not in t.FONTS:
+            raise ValueError(f"name_weight must be one of: {', '.join(t.FONTS)}")
         self.rate = 0.0
         self.total_today = 0
         self.cache_hit: float | None = None
@@ -238,9 +251,55 @@ class Agents(Widget):
         phase = (self._now() % self.pulse) / self.pulse
         return 0.3 + 0.7 * (0.5 + 0.5 * math.cos(2 * math.pi * phase))  # 1 -> 0.3 -> 1
 
+    def _window(self, s: Session) -> int:
+        """Context window: logged by Codex; Claude doesn't log it, so `claude_window` (1M)."""
+        return s.window if s.window is not None and s.window > 0 else self.claude_window
+
+    def _draw_detailed(self, d, left, y, w, h):
+        """Few sessions (<= `detail_rows`): two lines each. Name + status, then model, a
+        context-fill bar and context tokens. Names stay neutral: the bar shows fill."""
+        name_f = t.font(23, self.name_weight)
+        small = t.font(16)
+        small_b = t.font(16, "bold")
+        slot = min((h - 2 * y) / len(self.active), 72)
+        status_right = w - t.PAD
+        text_x = left + 30
+        model_w = d.textlength("gpt-6.6-astra xhigh", font=small)  # longest expected model + effort
+        num_w = d.textlength("99.9K", font=small_b)
+        for i, s in enumerate(self.active):
+            ry = y + i * slot + 2
+            t.icon(d, left, ry + 2, s.tool, 22)
+            self._status(d, status_right, ry, s, name_f)
+            name_right = status_right - d.textlength("59m", font=name_f) - 12
+            d.text((text_x, ry), t.fit_text(d, Path(s.cwd).name or "?", name_f, name_right - text_x),
+                   font=name_f, fill=t.TEXT)
+            cy = ry + 44  # detail line centre
+            _, y0, _, y1 = d.textbbox((0, 0), "0", font=small)
+            ty = cy - (y0 + y1) / 2
+            # left to right: model + effort (right-aligned in their column, so efforts line
+            # up), context tokens, then the fill bar out to the right edge
+            model = s.model.removeprefix("claude-") or "?"
+            effort = EFFORT.get(s.effort, s.effort)
+            eff_w = d.textlength(" " + effort, font=small) if effort else 0
+            model = t.fit_text(d, model, small, model_w - eff_w)
+            model_right = text_x + model_w
+            if effort:  # effort a step brighter than the model so it stands apart
+                t.text_right(d, model_right, ty, effort, small, t.TEXT)
+            t.text_right(d, model_right - eff_w, ty, model, small, t.MUTED)
+            count_right = model_right + 14 + num_w
+            t.text_right(d, count_right, ty, t.human_count(s.context) if s.context else "—", small_b, t.TEXT)
+            window = self._window(s)
+            pct = min(99.0, 100 * s.context / window) if window else 0.0
+            bar_left = count_right + 10
+            t.bar(d, bar_left, round(cy - 4), status_right - bar_left, 8, pct, t.ACCENT)
+
     def _draw_list_single(self, d, left, y, w, h):
+        if 0 < len(self.active) <= self.detail_rows and (h - 2 * y) / len(self.active) >= 60:
+            self._draw_detailed(d, left, y, w, h)
+            return
         row_h = int(self.options.get("row_height", 28))
-        name_f, tok_f = t.font(round(row_h * 0.64), "bold"), t.font(round(row_h * 0.57))
+        name_f = t.font(round(row_h * 0.64), self.name_weight)
+        tok_f = t.font(round(row_h * 0.57))
         rows = int((h - 2 * y + 6) // row_h)
         if not self.active:
             d.text((left, h / 2 - 12), "no active agents", font=t.font(20), fill=t.MUTED)
@@ -269,5 +328,7 @@ class Agents(Widget):
             name_color = self._context_color(s) if self.options.get("context_colors", False) else t.TEXT
             d.text((text_x, ry), t.fit_text(d, Path(s.cwd).name or "?", name_f, name_right - text_x), font=name_f, fill=name_color)
         if len(shown) < len(self.active):
-            d.text((left + 30, y + len(shown) * row_h), f"+{len(self.active) - len(shown)} more",
-                   font=name_f, fill=t.MUTED)
+            more = f"+{len(self.active) - len(shown)} more"
+            if self.options.get("total", False):
+                more += f" · {len(self.active)} agents"
+            d.text((left + 30, y + len(shown) * row_h), more, font=name_f, fill=t.MUTED)

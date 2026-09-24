@@ -34,12 +34,13 @@ class Memory(Widget):
             t.bar(d, t.PAD, h - 14, w - 2 * t.PAD, 7, pct, color)
             return
         if self.options.get("style") == "vertical":  # narrow card: icon on top, bar filling bottom-up
-            f = t.font(int(self.options.get("size", 26)))
+            # icon level with the CPU/GPU icons: same size, centred on their headline digits
             label = self.options.get("label", "\U000F061A")
-            x0, y0, x1, y1 = d.textbbox((0, 0), label, font=f)
-            d.text((w / 2 - (x0 + x1) / 2, 10 - y0), label, font=f, fill=t.MUTED)
+            cy = t.headline_centre(6)
+            box = min(int(self.options.get("size", t.ICON_BOX)), w - 12)
+            t.glyph_icon(d, w / 2, cy, label, box, centre_x=True)
             bw = int(self.options.get("bar_width", 14))
-            top = 10 + (y1 - y0) + 10
+            top = round(cy + box / 2 + 10)
             t.vbar(d, (w - bw) / 2, top, bw, h - 10 - top, pct, color)
             return
         if self.options.get("style") == "card":  # no graph: headline, then used/total and bar at the bottom
@@ -65,6 +66,7 @@ class Memory(Widget):
         t.stat_line(d, w, 6, self.options.get("label", "RAM"), [(t.pct_text(pct), color)],
                     size=self.options.get("size", 30))
         # used/total in the gap under the headline; bar gets the full width
-        t.text_right(d, w - t.PAD, 40, f"{t.human_bytes(self.ram.used)}/{t.human_bytes(self.ram.total)}",
-                     t.font(int(self.options.get("detail_size", 18)), "bold"), t.TEXT)
+        if self.options.get("mem_numbers", True):
+            t.text_right(d, w - t.PAD, 40, f"{t.human_bytes(self.ram.used)}/{t.human_bytes(self.ram.total)}",
+                         t.font(int(self.options.get("detail_size", 18)), "bold"), t.TEXT)
         t.bar(d, t.PAD, h - 24, w - 2 * t.PAD, 14, pct, color)

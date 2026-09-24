@@ -15,6 +15,13 @@ class ClockWeather(Widget):
 
     def __init__(self, **options):
         super().__init__(**options)
+        if options.get("style") == "band":
+            for name, default, minimum in (("hours", 0, 0), ("gap", 22, 0),
+                                           ("time_size", 60, 1), ("date_size", 20, 1),
+                                           ("temp_size", 60, 1), ("hilo_size", 18, 1)):
+                value = options.get(name, default)
+                if type(value) is not int or value < minimum:
+                    raise ValueError(f"{name} must be an integer >= {minimum} for band style")
         self.clock = Clock(**options)
         self.weather = Weather(**options)
         self._weather_due = 0.0
@@ -47,6 +54,9 @@ class ClockWeather(Widget):
         if self.options.get("style") == "dense":
             self._draw_dense(d, w, h)
             return
+        if self.options.get("style") == "band":
+            self._draw_band(d, w, h)
+            return
         if self.options.get("arrangement") == "row":
             self._draw_row(d, w, h)
             return
@@ -55,6 +65,80 @@ class ClockWeather(Widget):
         self._draw_clock(d, mid - 4, h)
         self._draw_current(d, mid + 26, w - t.PAD, snapshot)
         self._draw_hourly(d, mid + 10, w - t.PAD, h, snapshot)
+
+    def _draw_band(self, d, w, h):
+        """One pane, left to right: time (small raised AM/PM) over the date; weather icon and
+        temperature; hi/lo/humidity column; then, with `hours` > 0, an hourly forecast in
+        columns filling the rest. Sizes: time_size (60), date_size (20), temp_size (60),
+        hilo_size (18); gap (22) between groups."""
+        o, now = self.options, self.clock.now
+        gap = int(o.get("gap", 22))
+        time_f = t.font(int(o.get("time_size", 60)), "bold")
+        date_f = t.font(int(o.get("date_size", 20)))
+        am_f = t.font(round(time_f.size * 0.3), "bold")
+        stamp = now.strftime(o.get("format", "%-I:%M"))
+        date = now.strftime("%a, %b %-d")
+        _, ty0, _, ty1 = d.textbbox((0, 0), "0", font=time_f)
+        _, dy0, _, dy1 = d.textbbox((0, 0), "0", font=date_f)
+        block = (ty1 - ty0) + 10 + (dy1 - dy0)  # time + date, centred vertically
+        top = (h - block) / 2
+        d.text((t.PAD, top - ty0), stamp, font=time_f, fill=t.TEXT)
+        time_w = max(d.textlength("12:59", font=time_f), d.textlength(stamp, font=time_f))
+        am_w = d.textlength("AM", font=am_f) + 5 if o.get("ampm", True) else 0
+        if o.get("ampm", True):
+            _, ay0, _, _ = d.textbbox((0, 0), "AM", font=am_f)
+            d.text((t.PAD + d.textlength(stamp, font=time_f) + 5, top - ay0), now.strftime("%p"), font=am_f, fill=t.MUTED)
+        d.text((t.PAD + 2, top + (ty1 - ty0) + 10 - dy0), date, font=date_f, fill=t.MUTED)
+        x = t.PAD + max(time_w + am_w, d.textlength("Wed, Sep 30", font=date_f),
+                        d.textlength(date, font=date_f)) + gap
+
+        snap = self.weather.snapshot
+        if snap is None:
+            d.text((x, h / 2 - 12), self.weather.error or "loading weather…", font=t.font(18), fill=t.MUTED)
+            return
+        icon = glyph(snap.code, snap.is_day)
+        temp_f = t.font(int(o.get("temp_size", 60)), "bold")
+        icon_f = t.font(round(temp_f.size * 0.62))
+        ix0, iy0, ix1, iy1 = d.textbbox((0, 0), icon, font=icon_f)
+        d.text((x - ix0, h / 2 - (iy0 + iy1) / 2), icon, font=icon_f, fill=t.ORANGE if snap.is_day else t.MAGENTA)
+        x += ix1 - ix0 + 8
+        temp = f"{snap.temperature:.0f}°"
+        _, py0, _, py1 = d.textbbox((0, 0), temp, font=temp_f)
+        tw = d.textlength("100°", font=temp_f)
+        t.text_right(d, x + tw, h / 2 - (py0 + py1) / 2, temp, temp_f, t.TEXT)
+        x += tw + 16
+        hf = t.font(int(o.get("hilo_size", 18)), "bold")
+        rows = [(f"↑{snap.high:.0f}°", t.RED), (f"↓{snap.low:.0f}°", t.CYAN), (f"\U000F058E{t.pct_text(snap.humidity)}", t.MUTED)]
+        hw = max(d.textlength(text, font=hf) for text, _ in rows)
+        _, hy0, _, hy1 = d.textbbox((0, 0), "0", font=hf)
+        step = min((h - 16) / 3, (hy1 - hy0) + 10)
+        for i, (text, color) in enumerate(rows):
+            cy = h / 2 + (i - 1) * step
+            t.text_right(d, x + hw, cy - (hy0 + hy1) / 2, text, hf, color)
+        if o.get("stale") == "icon" and self.weather.freshness_text(snap):
+            t.stale_mark(d, x - 12, 4, 18)
+        x += hw + gap
+
+        lf, gf, vf = t.font(15, "bold"), t.font(22), t.font(18, "bold")
+        hours = snap.hours[:o.get("hours", 0)]
+        if hours:
+            deg = "" if any(len(f"{hr[3]:.0f}") > 2 for hr in hours) else "°"
+            min_col = max(d.textlength("12pm", font=lf), d.textlength(f"107{deg}", font=vf),
+                          d.textbbox((0, 0), glyph(0, 1), font=gf)[2]) + 8
+            fit = max(0, int((w - t.PAD - x) // min_col))
+            hours = hours[:fit]
+        if not hours:
+            return
+        d.line((x - gap / 2, 12, x - gap / 2, h - 13), fill=t.TRACK)
+        col = (w - t.PAD - x) / len(hours)
+        deg = "" if any(len(f"{hr[3]:.0f}") > 2 for hr in hours) else "°"
+        for i, (when, code, is_day, temp_h) in enumerate(hours):
+            cx = x + (i + 0.5) * col
+            for text, f, fill, cy in ((when.strftime("%-I%p").lower(), lf, t.MUTED, h * 0.24),
+                                      (glyph(code, is_day), gf, t.ORANGE if is_day else t.MAGENTA, h * 0.5),
+                                      (f"{temp_h:.0f}{deg}", vf, t.TEXT, h * 0.77)):
+                x0, y0, x1, y1 = d.textbbox((0, 0), text, font=f)
+                d.text((cx - (x0 + x1) / 2, cy - (y0 + y1) / 2), text, font=f, fill=fill)
 
     def _draw_dense(self, d, w, h):
         """Small clock, separate current conditions, and five hourly rows."""
@@ -245,6 +329,10 @@ class ClockWeather(Widget):
         for i, part in enumerate((now.strftime("%a"), now.strftime("%b"), now.strftime("%-d"))):
             t.text_right(d, col_right, 8 + i * step, part, date_f, t.MUTED)
 
+        raised = self.options.get("ampm", True) and self.options.get("ampm_style", "watermark") == "raised"
+        if raised:  # small AM/PM top-right of the digits, like a superscript: reserve its width
+            raised_f = t.font(int(self.options.get("ampm_size", 22)), "bold")
+            time_right -= d.textlength("AM", font=raised_f) + 6
         # time: as large as fits beside the date column, and within the card height
         ref = t.font(100, "bold")
         _, ry0, _, ry1 = d.textbbox((0, 0), "0", font=ref)
@@ -253,7 +341,10 @@ class ClockWeather(Widget):
                             time_right - time_left)
         _, dy0, _, dy1 = d.textbbox((0, 0), "0", font=time_f)
         time_y = h / 2 - (dy0 + dy1) / 2
-        if self.options.get("ampm", True) and self.options.get("ampm_style", "watermark") == "side":
+        if raised:
+            _, ay0, _, _ = d.textbbox((0, 0), "AM", font=raised_f)
+            d.text((time_right + 6, time_y + dy0 - ay0), now.strftime("%p"), font=raised_f, fill=t.MUTED)
+        elif self.options.get("ampm", True) and self.options.get("ampm_style", "watermark") == "side":
             # plain AM/PM just left of the digits, top-aligned with them (for wide boxes where a
             # height-limited watermark would hide behind digits of the same size)
             hm_w = d.textlength(now.strftime(self.options.get("format", "%-I:%M")), font=time_f)

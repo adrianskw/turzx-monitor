@@ -167,7 +167,7 @@ class App:
             log.warning("night_brightness needs latitude/longitude in [display] or a weather widget; ignoring it")
         self._next_sun_check = 0.0
         self._update_sun(time.time())
-        self.follow_session = bool(display_cfg.get("follow_session", True)) and not preview
+        self.follow_session = bool(display_cfg.get("follow_session", True)) and preview is None
         self.theme_name = display_cfg.get("theme", "current")
         self.mode = session.ON
         self.running = True
@@ -186,7 +186,7 @@ class App:
         self._last_wall = now
 
     def connect(self):
-        if self.preview:
+        if self.preview is not None:
             self.display = PreviewDisplay(self.preview)
         else:
             self.display = TurzxDisplay(
@@ -305,6 +305,8 @@ class App:
         try:
             self.connect()
         except OSError:
+            if self.preview is not None:
+                raise  # a PNG path error cannot be fixed by reconnecting hardware
             log.exception("display init failed; retrying")
             self._reconnect()
         if not self.running:
@@ -336,6 +338,8 @@ class App:
                     self.schedule(now)
                     self.flush()
             except OSError:  # serial link dropped (unplug, screen reset, suspend)
+                if self.preview is not None:
+                    raise
                 log.exception("display I/O error; reconnecting")
                 self._reconnect()
             time.sleep(0.05)

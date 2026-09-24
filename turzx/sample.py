@@ -59,6 +59,7 @@ def populate(widget: Widget) -> None:
     elif isinstance(widget, Cpu):
         widget.total, widget.temp, widget.power = 37.0, 56.0, 42.0
         widget.cores = [18, 45, 32, 62, 24, 57, 38, 74, 21, 49, 35, 55]
+        widget.ram_pct = 62.5 if widget.ram_mode else None
         widget.history = deque((32 + 12 * sin(i / 5) + i / 8 for i in range(60)), maxlen=60)
     elif isinstance(widget, Forecast):
         _weather(widget.weather)
@@ -98,6 +99,8 @@ def populate(widget: Widget) -> None:
             session.today = tokens
             session.input_total, session.cache_read = 1000, hit * 10
             session.context, session.window = context, window
+            session.model = "gpt-6.6-astra" if tool == "codex" else "claude-opus-5-5"
+            session.effort = {"turzx-5in-display": "xhigh", "landing-page": "medium"}.get(name, "high")
             widget.active.append(session)
     elif isinstance(widget, Burn):
         widget.rate, widget.total_today, widget.cache_hit = 18_500, 3_400_000, 96.0

@@ -28,6 +28,9 @@ from pathlib import Path
 
 CLAUDE_DIR = Path.home() / ".claude/projects"
 CODEX_DIR = Path.home() / ".codex/sessions"
+MAX_RATE_MINUTES = 24 * 60
+EVENT_SECONDS = MAX_RATE_MINUTES * 60
+FINGERPRINT_BYTES = 256
 
 
 class Session:
@@ -38,6 +41,9 @@ class Session:
         self.identity: tuple[int, int] | None = None
         self.size = 0
         self.mtime_ns = 0
+        self.ctime_ns = 0
+        self.head = b""  # first committed bytes, to detect same-inode rewrites
+        self.tail = b""  # last committed bytes, to detect a rewritten log of equal size
         self.cwd = ""
         self.mtime = 0.0
         self.today = 0  # fresh tokens since local midnight
@@ -46,6 +52,8 @@ class Session:
         self.context = 0  # current context size: all input tokens of the latest turn
         self.window: int | None = None  # context window, when the log states it (Codex)
         self.turn_start = 0.0  # when the latest prompt was sent: the running job's start
+        self.model = ""  # latest model id, e.g. "claude-opus-5-5" / "gpt-6-sol"
+        self.effort = ""  # latest reasoning effort: low / medium / high / xhigh / max
 
     @property
     def cache_hit(self) -> float | None:
@@ -88,6 +96,26 @@ def _context(tool: str, entry: dict) -> tuple[int, int | None]:
     return (info.get("last_token_usage") or {}).get("input_tokens", 0), info.get("model_context_window")
 
 
+def _model(tool: str, entry: dict) -> str:
+    """Model id named by this entry, or "": Claude assistant messages, Codex turn_context."""
+    if tool == "codex":
+        payload = entry.get("payload") or {}
+        model = payload.get("model") if entry.get("type") == "turn_context" else ""
+        return model if isinstance(model, str) else ""
+    msg = entry.get("message")
+    model = msg.get("model", "") if isinstance(msg, dict) and entry.get("type") == "assistant" else ""
+    return model if isinstance(model, str) and not model.startswith("<") else ""
+
+
+def _effort(tool: str, entry: dict) -> str:
+    """Reasoning effort named by this entry, or "": top-level on Claude assistant entries,
+    in turn_context for Codex."""
+    if tool == "codex":
+        payload = entry.get("payload") or {}
+        return str(payload.get("effort") or "") if entry.get("type") == "turn_context" else ""
+    return str(entry.get("effort") or "") if entry.get("type") == "assistant" else ""
+
+
 def _is_prompt(tool: str, entry: dict) -> bool:
     """True for the entry that starts a turn: a typed prompt (Claude) or task_started (Codex)."""
     if tool == "codex":
@@ -123,26 +151,44 @@ class TokenLog:
             with s.path.open("rb") as f:
                 stat = os.fstat(f.fileno())
                 identity = (stat.st_dev, stat.st_ino)
-                if s.identity is not None and (identity != s.identity or stat.st_size < s.offset):
+                replaced = s.identity is not None and (
+                    identity != s.identity or stat.st_size < s.offset or
+                    (stat.st_size == s.size and stat.st_ctime_ns != s.ctime_ns))
+                if s.identity is not None and not replaced and s.offset:
+                    f.seek(0)
+                    replaced = f.read(len(s.head)) != s.head
+                    if not replaced:
+                        f.seek(s.offset - len(s.tail))
+                        replaced = f.read(len(s.tail)) != s.tail
+                if replaced:
                     # A replaced/truncated log is a new session, even at the same path.
                     self.events = deque(e for e in self.events if e[4] != s.path)
                     s.offset = s.today = s.cache_read = s.input_total = s.context = 0
                     s.window = None
                     s.cwd = ""
                     s.turn_start = 0.0
+                    s.model = s.effort = ""
                 f.seek(s.offset)
                 chunk = f.read()
+                end = chunk.rfind(b"\n")
+                if end >= 0:
+                    committed = s.offset + end + 1
+                    f.seek(0)
+                    head = f.read(min(committed, FINGERPRINT_BYTES))
+                    f.seek(max(0, committed - FINGERPRINT_BYTES))
+                    tail = f.read(min(committed, FINGERPRINT_BYTES))
         except OSError:
             return False
         s.identity = identity
         s.size = stat.st_size
         s.mtime_ns = stat.st_mtime_ns
+        s.ctime_ns = stat.st_ctime_ns
         s.mtime = stat.st_mtime
-        end = chunk.rfind(b"\n")
         if end < 0:
             return True
         s.offset += end + 1
-        hour_ago = time.time() - 3600
+        s.head, s.tail = head, tail
+        event_cutoff = time.time() - EVENT_SECONDS
         for line in chunk[:end].splitlines():
             try:
                 entry = json.loads(line)
@@ -153,6 +199,8 @@ class TokenLog:
                 fresh, read, inp = _tokens(s.tool, entry)
                 ts = _ts(entry["timestamp"]) if (fresh or inp) and "timestamp" in entry else None
                 prompt = _ts(entry["timestamp"]) if "timestamp" in entry and _is_prompt(s.tool, entry) else None
+                model = _model(s.tool, entry)
+                effort = _effort(s.tool, entry)
             except (ValueError, TypeError, AttributeError, KeyError, OverflowError, UnicodeError):
                 # A damaged record must not hide valid records later in the file.
                 continue
@@ -164,12 +212,16 @@ class TokenLog:
                 s.window = window
             if prompt is not None:
                 s.turn_start = prompt
+            if model:
+                s.model = model
+            if effort:
+                s.effort = effort
             if ts is not None:
                 if ts >= midnight:
                     s.today += fresh
                     s.cache_read += read
                     s.input_total += inp
-                if ts >= hour_ago:
+                if ts >= event_cutoff:
                     self.events.append((ts, fresh, read, inp, s.path))
         return True
 
@@ -184,14 +236,14 @@ class TokenLog:
             midnight = datetime.combine(today, datetime.min.time()).timestamp()
             if today != self.day:  # new day: start counting from scratch
                 self.day, self.sessions, self.events = today, {}, deque()
-            for tool, path, stat in self._candidates(min(midnight, now - 3600)):
+            for tool, path, stat in self._candidates(min(midnight, now - EVENT_SECONDS)):
                 s = self.sessions.get(path)
                 if s is None:
                     s = self.sessions[path] = Session(tool, path)
-                if (stat.st_mtime_ns != s.mtime_ns or stat.st_size != s.size
+                if (stat.st_mtime_ns != s.mtime_ns or stat.st_ctime_ns != s.ctime_ns or stat.st_size != s.size
                         or (stat.st_dev, stat.st_ino) != s.identity):
                     self._read_new(s, midnight)
-            self.events = deque(e for e in self.events if e[0] >= now - 3600)
+            self.events = deque(e for e in self.events if e[0] >= now - EVENT_SECONDS)
 
     def rate(self, minutes: float) -> float:
         """Rolling burn: fresh tokens per minute over the last `minutes`."""
