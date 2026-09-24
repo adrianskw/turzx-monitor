@@ -15,7 +15,7 @@ from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw
 
-from turzx import session, theme
+from turzx import session, sun, theme
 from turzx.driver import HEIGHT, WIDTH, PreviewDisplay, TurzxDisplay
 from turzx.widget import REGISTRY, Widget
 import turzx.widgets  # noqa: F401  (registers widgets)
@@ -139,6 +139,14 @@ def _run_update(widget: Widget, once: bool = False) -> None:
         log.exception("%s.update failed", widget.kind)
 
 
+def _location(display_cfg: dict, slots) -> tuple[float, float] | None:
+    """(latitude, longitude) from [display], else from the first widget that has them."""
+    for opts in [display_cfg] + [s.widget.options for s in slots]:
+        if "latitude" in opts and "longitude" in opts:
+            return float(opts["latitude"]), float(opts["longitude"])
+    return None
+
+
 class App:
     def __init__(self, display_cfg: dict, slots: list[Slot], preview: str | None, cards: list[tuple] = ()):
         self.cfg = display_cfg
@@ -147,8 +155,18 @@ class App:
         self.preview = preview
         self.pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="widget")
         self.display = None
-        self.brightness = int(display_cfg.get("brightness", 50))
+        self.day_brightness = self.brightness = int(display_cfg.get("brightness", 50))
         self.dim_brightness = int(display_cfg.get("dim_brightness", 10))
+        # day/night: fade `brightness` down to `night_brightness` through twilight, at the
+        # layout's location ([display] latitude/longitude, else the weather widget's)
+        self.night_brightness = display_cfg.get("night_brightness")
+        if self.night_brightness is not None and not 0 <= int(self.night_brightness) <= 100:
+            raise SystemExit("night_brightness must be 0-100")
+        self.location = _location(display_cfg, slots) if self.night_brightness is not None else None
+        if self.night_brightness is not None and self.location is None:
+            log.warning("night_brightness needs latitude/longitude in [display] or a weather widget; ignoring it")
+        self._next_sun_check = 0.0
+        self._update_sun(time.time())
         self.follow_session = bool(display_cfg.get("follow_session", True)) and not preview
         self.theme_name = display_cfg.get("theme", "current")
         self.mode = session.ON
@@ -163,7 +181,7 @@ class App:
         else:
             self.display = TurzxDisplay(
                 port=self.cfg.get("port", "auto"),
-                brightness=int(self.cfg.get("brightness", 50)),
+                brightness=self.brightness,
                 flip=bool(self.cfg.get("flip", False)),
             )
         self.mode = session.ON
@@ -187,6 +205,9 @@ class App:
 
     def watch_session(self, now: float) -> None:
         """Every couple of seconds: follow lock/screensaver state and theme changes."""
+        if self._update_sun(now) and self.mode == session.ON and self.display is not None:
+            log.info("brightness %d (sun)", self.brightness)
+            self.display.set_brightness(self.brightness)
         if now < self._next_session_check:
             return
         if self._mode_future is None:
@@ -211,6 +232,17 @@ class App:
                 self._apply_mode(new)
         elif self._mode_future is None:
             self._next_session_check = now + 2
+
+    def _update_sun(self, now: float) -> bool:
+        """Recompute the day/night brightness once a minute; True if it changed."""
+        if self.location is None or now < self._next_sun_check:
+            return False
+        self._next_sun_check = now + 60
+        level = sun.level(*self.location, now, self.day_brightness, int(self.night_brightness))
+        if level == self.brightness:
+            return False
+        self.brightness = level
+        return True
 
     def _apply_mode(self, new: str) -> None:
         log.info("session %s -> %s", self.mode, new)
@@ -341,7 +373,7 @@ def main() -> None:
         raise SystemExit(f"layout not found: {path} (try --list)")
     log.info("layout %s", path)
     display_cfg, slots, cards = load_config(path, sample=args.sample_data)
-    theme.load(display_cfg.get("theme", "current"))
+    theme.load(display_cfg.get("theme", "current"), display_cfg.get("muted_lift", 0.0))
     app = App(display_cfg, slots, args.preview, cards)
 
     def stop(*_):  # finish the in-flight update instead of dying mid-transfer

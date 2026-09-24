@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -22,7 +23,10 @@ CODES = {
 NIGHT_CLEAR = "\U000F0594"
 NIGHT_PARTLY_CLOUDY = "\U000F0F31"
 HOURS = 5  # hourly forecast columns shown by this widget
-FORECAST_HOURS = 12  # fetched, so layouts can show more (clock_weather `hours`)
+FORECAST_HOURS = 24  # fetched, so layouts can show more (clock_weather `hours`, forecast widget)
+_CACHE: dict = {}  # url -> (time.time(), WeatherSnapshot): widgets showing the same place share one fetch
+_CACHE_LOCK = threading.Lock()
+CACHE_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -81,6 +85,11 @@ class Weather(Widget):
             f"&hourly=temperature_2m,weather_code,is_day&forecast_hours={FORECAST_HOURS + 1}"
             + ("&temperature_unit=fahrenheit" if imperial else "")
         )
+        with _CACHE_LOCK:
+            hit = _CACHE.get(url)
+        if hit and time.time() - hit[0] < CACHE_SECONDS:  # another widget just fetched this
+            self.snapshot, self.error = hit[1], None
+            return
         try:
             with urllib.request.urlopen(url, timeout=15) as r:
                 data = json.load(r)
@@ -105,6 +114,8 @@ class Weather(Widget):
             )
             self.snapshot = snapshot
             self.error = None
+            with _CACHE_LOCK:
+                _CACHE[url] = (time.time(), snapshot)
         except Exception as e:
             self.error = f"weather: {type(e).__name__}"
 

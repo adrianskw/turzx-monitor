@@ -2,6 +2,7 @@
 
 import re
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -13,6 +14,8 @@ from turzx.app import App, Slot, load_config
 from turzx.sample import SAMPLE_NOW, populate
 from turzx.widgets.agents import Agents
 from turzx.widgets.ai_usage import AiUsage, reset_text
+from turzx.widgets.clock_weather import ClockWeather
+from turzx.widgets.weather import glyph
 
 
 class AnimationTests(unittest.TestCase):
@@ -67,6 +70,29 @@ class AgentLayoutTests(unittest.TestCase):
                         _, cx, _, radius, *_ = ring.call_args.args
                         self.assertLess(cx + radius, status_box[0])
                         self.assertLess(name_box[2], cx - radius)
+
+
+class WeatherIconLayoutTests(unittest.TestCase):
+    def test_left_icon_stays_clear_of_two_and_three_digit_temperatures(self):
+        widget = ClockWeather(arrangement="row", show="weather", forecast=False,
+                              icon_left=True, temp_size=84, hilo_size=20)
+        populate(widget)
+        for temperature in (71, 107):
+            with self.subTest(temperature=temperature):
+                widget.weather.snapshot = replace(widget.weather.snapshot, temperature=temperature)
+                draw = ImageDraw.Draw(Image.new("RGB", (315, 110)))
+                with patch.object(draw, "text", wraps=draw.text) as text:
+                    widget.draw(draw, 315, 110)
+                icon = next(c for c in text.call_args_list if c.args[1] == glyph(0, 1))
+                number = next(c for c in text.call_args_list if c.args[1] == f"{temperature}°")
+                high = next(c for c in text.call_args_list if c.args[1].startswith("↑"))
+                icon_box = draw.textbbox(icon.args[0], icon.args[1], font=icon.kwargs["font"])
+                number_box = draw.textbbox(number.args[0], number.args[1], font=number.kwargs["font"])
+                high_box = draw.textbbox(high.args[0], high.args[1], font=high.kwargs["font"])
+                self.assertGreaterEqual(icon_box[0], 14)
+                self.assertLess(icon_box[2], number_box[0])
+                self.assertLess(number_box[2], high_box[0])
+                self.assertEqual(icon.kwargs["fill"], t.ORANGE)
 
 
 class UsageLayoutTests(unittest.TestCase):

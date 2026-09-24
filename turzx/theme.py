@@ -54,12 +54,24 @@ def theme_path(name: str) -> Path:
     raise SystemExit(f"Omarchy theme {name!r} not found in {', '.join(map(str, OMARCHY_THEMES))}")
 
 
-def load(name: str) -> None:
-    """Adopt the palette of an Omarchy theme, e.g. "tokyo-night" or "current"."""
+muted_lift = 0.0  # 0-1: how far secondary text is lifted from MUTED toward TEXT
+
+
+def load(name: str, lift: float | None = None) -> None:
+    """Adopt the palette of an Omarchy theme, e.g. "tokyo-night" or "current". `lift`
+    (kept for later reloads) brightens MUTED toward TEXT: the theme's dark foreground is
+    dimmer on the panel than on a monitor."""
+    global muted_lift
+    if lift is not None:
+        if not 0 <= lift <= 1:
+            raise ValueError("muted_lift must be between 0 and 1")
+        muted_lift = float(lift)
     colors = tomllib.loads(theme_path(name).read_text())
     # Parse every role before publishing any colors, so a broken edit leaves the
     # previous palette intact while the theme file is being rewritten.
     palette = {role: _hex(colors[key]) for role, key in ROLES.items() if key in colors}
+    if muted_lift and "MUTED" in palette:
+        palette["MUTED"] = blend(palette["MUTED"], palette.get("TEXT", TEXT), muted_lift)
     globals().update(palette)
 
 
@@ -150,6 +162,21 @@ def bar(d: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, pct: float, colo
     ImageDraw.Draw(mask).rounded_rectangle((0, 0, w, h), radius=r, fill=255)
     mask.paste(0, (fill_w, 0, w + 1, h + 1))
     d._image.paste(color or level_color(pct), (x, y), mask)
+
+
+def vbar(d: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, pct: float, color, step: float = 1.0) -> None:
+    """Vertical bar filling bottom-up, exact to the pixel, quantized to `step` percent."""
+    x, y, w, h = round(x), round(y), round(w), round(h)
+    pct = max(0.0, min(100.0, round(pct / step) * step))
+    r = min(BAR_RADIUS, w // 2)
+    d.rounded_rectangle((x, y, x + w, y + h), radius=r, fill=TRACK)
+    fill_h = round(h * pct / 100)
+    if fill_h <= 0:
+        return
+    mask = Image.new("L", (w + 1, h + 1), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, w, h), radius=r, fill=255)
+    mask.paste(0, (0, 0, w + 1, h + 1 - fill_h))
+    d._image.paste(color, (x, y), mask)
 
 
 def blend(a, b, k: float) -> tuple[int, int, int]:
@@ -256,10 +283,42 @@ def role(name: str):
     return globals()[name.upper()]
 
 
+def ramp(value: float, warn: float, crit: float, base=None, start: float | None = None):
+    """Gradual warning color: base until `start` (default warn/2), fading to yellow at warn,
+    then to red at crit."""
+    base = base or TEXT
+    start = warn / 2 if start is None else start
+    if value <= start:
+        return base
+    if value <= warn:
+        return blend(base, YELLOW, (value - start) / max(warn - start, 1e-9))
+    if value <= crit:
+        return blend(YELLOW, RED, (value - warn) / max(crit - warn, 1e-9))
+    return RED
+
+
 def threshold_color(v: float | None, warn: float, crit: float):
     if v is None or v < warn:
         return TEXT
     return RED if v >= crit else YELLOW
+
+
+def usage_bar(d: ImageDraw.ImageDraw, w: int, h: int, pct: float, used: int, total: int, color,
+              numbers: bool = True) -> None:
+    """Bottom row of a card: bar with "used/total" right of it, or, when that would leave the
+    bar under half the card, "used/total" just above a full-width bar. numbers=False: bar only."""
+    if not numbers:
+        bar(d, PAD, h - 24, w - 2 * PAD, 14, pct, color)
+        return
+    f = font(18, "bold")
+    label = f"{human_bytes(used)}/{human_bytes(total)}"
+    widest = d.textlength(f"999.9M/{human_bytes(total)}", font=f)  # reserved so the bar never changes length
+    if w - 2 * PAD - widest - 10 >= (w - 2 * PAD) / 2:
+        text_right(d, w - PAD, h - 28, label, f, TEXT)
+        bar(d, PAD, h - 24, w - 2 * PAD - widest - 10, 14, pct, color)
+    else:
+        text_right(d, w - PAD, h - 50, label, f, TEXT)
+        bar(d, PAD, h - 24, w - 2 * PAD, 14, pct, color)
 
 
 def fields_right(d: ImageDraw.ImageDraw, right: float, y: int, fields, fnt, gap: str = "  ") -> None:

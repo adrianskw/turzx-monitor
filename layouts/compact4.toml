@@ -1,0 +1,99 @@
+# compact4 (draft): compact3 re-proportioned after review.
+#   - one vertical line at x=331 through every row (time = weather, CPU = GPU widths),
+#     plus the forecast edge at 662
+#   - CPU/GPU shortened to 120 px (their graphs don't need more); RAM joins the
+#     hardware as a one-line strip under them instead of sitting in the weather column
+#   - the forecast gets its whole column (9 hours)
+#   - the freed height goes to the bottom card: roomier AI limits and taller,
+#     larger agent rows (4 sessions + "+N more")
+
+[display]
+port = "auto"
+brightness = 60
+dim_brightness = 10
+follow_session = true
+flip = false
+theme = "current"
+
+[[widget]]
+type = "clock_weather"
+box = [0, 0, 331, 110]
+arrangement = "row"
+show = "time"
+date_side = "right"
+date_size = 22
+time_size = 100
+
+[[widget]]
+type = "clock_weather"
+box = [331, 0, 331, 110]
+arrangement = "row"
+show = "weather"
+forecast = false
+units = "imperial"
+temp_size = 84
+hilo_size = 20
+stale = "icon"
+
+[[widget]]
+type = "forecast"
+box = [662, 0, 138, 270]
+units = "imperial"
+hours = 9
+columns = 1
+
+[[widget]]
+type = "cpu"
+box = [0, 110, 331, 120]
+label = ""
+temp_unit = "°"
+size = 30
+watt_digits = 3
+temp_warn = 75
+temp_crit = 85
+power_warn = 60
+power_crit = 80
+
+[[widget]]
+type = "gpu"
+box = [331, 110, 331, 120]
+label = "\U000F08AE"
+temp_unit = "°"
+size = 30
+temp_warn = 75
+temp_crit = 83
+power_warn = 180
+power_crit = 210
+
+[[widget]]
+type = "memory"
+box = [0, 230, 662, 40]
+style = "strip"
+label = "\U000F061A"
+size = 24
+
+[[card]]
+box = [0, 270, 800, 210]
+
+[[widget]]
+type = "burn"
+box = [0, 270, 331, 42]
+frame = false
+
+[[widget]]
+type = "ai_usage"
+box = [0, 312, 331, 168]
+frame = false
+providers = ["claude", "codex"]
+window_labels = false
+stale = "icon"
+
+[[widget]]
+type = "agents"
+box = [331, 270, 469, 210]
+frame = false
+stats = "none"
+status = "dot"
+rows = "single"
+row_height = 36
+max_rows = 4

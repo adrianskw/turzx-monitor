@@ -1,0 +1,100 @@
+# compact3: one box per job.
+#   - time box: time + date column on its right (AM/PM watermark)
+#   - weather box: current temperature (faint icon behind) + hi/lo/humidity
+#   - forecast box: one column of 7 hours down the right edge, RAM card under it
+#   - CPU and GPU
+#   - bottom card sized for exactly 4 agent sessions + "+N more", next to the
+#     token burn line and AI limits
+
+[display]
+port = "auto"
+brightness = 60
+dim_brightness = 10
+follow_session = true
+flip = false
+theme = "current"
+
+[[widget]]
+type = "clock_weather"
+box = [0, 0, 362, 110]
+arrangement = "row"
+show = "time"
+date_side = "right"
+date_size = 22
+time_size = 100
+
+[[widget]]
+type = "clock_weather"
+box = [362, 0, 300, 110]
+arrangement = "row"
+show = "weather"
+forecast = false
+units = "imperial"
+temp_size = 84
+hilo_size = 20
+stale = "icon"
+
+[[widget]]
+type = "forecast"
+box = [662, 0, 138, 220]  # just wide enough for "12am [icon] 100°"
+units = "imperial"
+hours = 7
+columns = 1
+# no stale icon: the weather box already shows one for the same data
+
+[[widget]]
+type = "memory"
+box = [662, 220, 138, 90]  # system RAM, under the forecast
+label = "\U000F061A"
+size = 30
+detail_size = 16
+
+[[widget]]
+type = "cpu"
+box = [0, 110, 331, 200]
+label = ""
+temp_unit = "°"
+size = 30
+watt_digits = 3
+temp_warn = 75
+temp_crit = 85
+power_warn = 60
+power_crit = 80
+
+[[widget]]
+type = "gpu"
+box = [331, 110, 331, 200]
+label = "\U000F08AE"
+temp_unit = "°"
+size = 30
+temp_warn = 75
+temp_crit = 83
+power_warn = 180
+power_crit = 210
+
+# bottom card: 170 px: four 28 px session rows + "+N more" on the right, and the
+# minimum that fits the burn line + both providers' limit rows on the left
+[[card]]
+box = [0, 310, 800, 170]
+
+[[widget]]
+type = "burn"
+box = [0, 310, 370, 38]
+frame = false
+
+[[widget]]
+type = "ai_usage"
+box = [0, 348, 370, 132]
+frame = false
+providers = ["claude", "codex"]
+window_labels = false
+stale = "icon"
+
+[[widget]]
+type = "agents"
+box = [370, 310, 430, 170]
+frame = false
+stats = "none"
+status = "dot"
+rows = "single"
+max_rows = 4

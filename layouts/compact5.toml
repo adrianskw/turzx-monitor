@@ -1,0 +1,103 @@
+# compact5: time, weather and a forecast column on top; CPU, GPU and RAM cards;
+# AI limits and agents in the bottom card.
+#   - no token counts anywhere: the limit bars (with pace ticks) and the agent dots,
+#     timers and name colors carry what matters
+#   - no wattage and no memory numbers; RAM is a 50 px card: icon over a vertical bar
+#   - the time/weather and limits/agents splits share x=315; the forecast edge at
+#     630 runs through the top two rows
+
+[display]
+port = "auto"
+brightness = 60         # daytime
+night_brightness = 20   # after dusk; fades through civil twilight (sun 6° above to 6° below the horizon)
+dim_brightness = 10
+follow_session = true
+flip = false
+theme = "current"
+muted_lift = 0.3        # secondary text (labels, units, sizes) closer to the main text
+
+[[widget]]
+type = "clock_weather"
+box = [0, 0, 315, 110]
+arrangement = "row"
+show = "time"
+date_side = "right"
+date_size = 22
+time_size = 100
+
+[[widget]]
+type = "clock_weather"
+box = [315, 0, 315, 110]
+arrangement = "row"
+show = "weather"
+forecast = false
+units = "imperial"
+temp_size = 84
+hilo_size = 20
+icon_left = true
+stale = "icon"
+
+[[widget]]
+type = "forecast"
+box = [630, 0, 170, 270]
+units = "imperial"
+hours = 8
+columns = 1
+fill = true             # fonts and icons sized to the rows
+
+[[widget]]
+type = "cpu"
+box = [0, 110, 290, 160]
+power = false
+label = ""
+temp_unit = "°"
+size = 30
+watt_digits = 3
+temp_warn = 75
+temp_crit = 85
+power_warn = 60
+power_crit = 80
+
+[[widget]]
+type = "gpu"
+box = [290, 110, 290, 160]
+power = false
+mem_numbers = false
+label = "\U000F08AE"
+temp_unit = "°"
+size = 30
+temp_warn = 75
+temp_crit = 83
+power_warn = 180
+power_crit = 210
+
+[[widget]]
+type = "memory"
+box = [580, 110, 50, 160]
+style = "vertical"
+label = "\U000F061A"
+size = 26
+
+[[card]]
+box = [0, 270, 800, 210]
+
+[[widget]]
+type = "ai_usage"
+box = [0, 270, 315, 210]
+frame = false
+providers = ["claude", "codex"]
+window_labels = false
+stale = "icon"
+
+[[widget]]
+type = "agents"
+box = [315, 270, 485, 210]
+frame = false
+stats = "none"
+status = "dot"
+rows = "single"
+row_height = 36
+max_rows = 4
+time_colors = true      # working dot by job run time, idle timer by idle time: green -> yellow 10 min -> red 20 min
+context_colors = true   # name: -> yellow -> red as the context window fills
+tokens = false          # no per-session token counts

@@ -13,6 +13,7 @@ from turzx.widgets.burn import Burn
 from turzx.widgets.clock import Clock
 from turzx.widgets.clock_weather import ClockWeather
 from turzx.widgets.cpu import Cpu
+from turzx.widgets.forecast import Forecast
 from turzx.widgets.gpu import Gpu
 from turzx.widgets.memory import Memory
 from turzx.widgets.network import Network
@@ -25,10 +26,11 @@ GIB = 1024 ** 3
 
 def _weather(widget: Weather) -> None:
     imperial = widget.options.get("units") == "imperial"
-    readings = (72, 74, 76, 75, 73, 71, 70, 68) if imperial else (22, 23, 24, 24, 23, 22, 21, 20)
+    readings = (72, 74, 76, 75, 73, 71, 70, 68, 66, 65, 64, 63) if imperial else (22, 23, 24, 24, 23, 22, 21, 20, 19, 18, 18, 17)
+    codes = (0, 1, 2, 3, 2, 61, 61, 3, 2, 1, 0, 0)
     hours = tuple(
-        (SAMPLE_DATE.replace(minute=0) + timedelta(hours=i), code, 1, temp)
-        for i, (code, temp) in enumerate(zip((0, 1, 2, 3, 2, 61, 61, 3), readings), 1)
+        (SAMPLE_DATE.replace(minute=0) + timedelta(hours=i), code, int(i < 9), temp)
+        for i, (code, temp) in enumerate(zip(codes, readings), 1)
     )
     widget.snapshot = WeatherSnapshot(
         temperature=71 if imperial else 22,
@@ -58,6 +60,9 @@ def populate(widget: Widget) -> None:
         widget.total, widget.temp, widget.power = 37.0, 56.0, 42.0
         widget.cores = [18, 45, 32, 62, 24, 57, 38, 74, 21, 49, 35, 55]
         widget.history = deque((32 + 12 * sin(i / 5) + i / 8 for i in range(60)), maxlen=60)
+        widget.ram = SimpleNamespace(percent=62.5, used=20 * GIB, total=32 * GIB)
+    elif isinstance(widget, Forecast):
+        _weather(widget.weather)
     elif isinstance(widget, Gpu):
         widget.handle = object()
         widget.util, widget.temp, widget.power = 64.0, 61.0, 142.0
@@ -80,16 +85,20 @@ def populate(widget: Widget) -> None:
         widget.cache_hit = 96.0
         widget.preview_now = SAMPLE_NOW
         widget.active = []
-        for tool, name, idle, tokens, hit in (
-            ("codex", "turzx-5in-display", 20, 870_000, 97),
-            ("claude", "landing-page", 45, 420_000, 82),
-            ("codex", "docs", 240, 98_000, 55),
+        # one job running 14 min (dot between yellow and red), idle 3 and 22 min (timer
+        # green-yellow and red); contexts span normal -> yellow -> red
+        for tool, name, idle, running, tokens, hit, context, window in (
+            ("codex", "turzx-5in-display", 20, 840, 870_000, 97, 60_000, 258_400),
+            ("claude", "landing-page", 180, 600, 420_000, 82, 170_000, None),
+            ("codex", "docs", 1320, 300, 98_000, 55, 230_000, 258_400),
         ):
             session = Session(tool, Path("/sample") / name)
             session.cwd = f"/sample/{name}"
             session.mtime = SAMPLE_NOW - idle
+            session.turn_start = session.mtime - running
             session.today = tokens
             session.input_total, session.cache_read = 1000, hit * 10
+            session.context, session.window = context, window
             widget.active.append(session)
     elif isinstance(widget, Burn):
         widget.rate, widget.total_today, widget.cache_hit = 18_500, 3_400_000, 96.0

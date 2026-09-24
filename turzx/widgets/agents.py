@@ -61,14 +61,18 @@ class Agents(Widget):
         return self.preview_now if self.preview_now is not None else time.time()
 
     def _status(self, d, right: float, y: float, s: Session, f) -> None:
-        """Right-aligned status: pulsing dot while working, else idle age."""
-        idle = self._now() - s.mtime
+        """Right-aligned status: pulsing dot while working, else idle age. With `time_colors`,
+        the dot goes green -> yellow -> red with how long the job has run, and the idle timer
+        does the same with how long the session has sat idle."""
+        now = self._now()
+        idle = now - s.mtime
+        ramp = self.options.get("time_colors", False)
         if idle >= self.working_seconds:
-            t.text_right(d, right, y, t.duration_text(idle), f, t.MUTED)
+            color = self._time_color(idle) if ramp else t.MUTED
+            t.text_right(d, right, y, t.duration_text(idle), f, color)
         elif self.options.get("status", "text") == "dot":
-            phase = (self._now() % self.pulse) / self.pulse
-            level = 0.3 + 0.7 * (0.5 + 0.5 * math.cos(2 * math.pi * phase))  # 1 -> 0.3 -> 1
-            color = t.blend(t.CARD, t.GREEN, level)
+            running = now - s.turn_start if s.turn_start else 0.0
+            color = t.blend(t.CARD, self._time_color(running) if ramp else t.GREEN, self._pulse())
             # centre the dot on the middle character of the 3-char idle timer column ("12m")
             cx = right - d.textlength("59m", font=f) / 2
             x0, _, x1, _ = d.textbbox((0, y), self.DOT, font=f)
@@ -216,28 +220,54 @@ class Agents(Widget):
             values = source.history.copy()
             t.sparkline(d, left, top + 27, w // 2 - 32, 43, values, color=color, dim=True)
 
+    def _time_color(self, seconds: float):
+        """Green, fading to yellow by `time_warn` minutes (10) and to red by `time_crit` (20)."""
+        o = self.options
+        return t.ramp(seconds / 60, float(o.get("time_warn", 10)), float(o.get("time_crit", 20)), base=t.GREEN, start=0)
+
+    def _context_color(self, s: Session):
+        """Name color by context size: normal, then yellow, then red as the context grows.
+        Uses % of the window when the log states it (Codex), else token counts (Claude)."""
+        o = self.options
+        if s.window:
+            pct = 100 * s.context / s.window
+            return t.ramp(pct, float(o.get("context_warn_pct", 60)), float(o.get("context_crit_pct", 85)))
+        return t.ramp(s.context, float(o.get("context_warn", 200_000)), float(o.get("context_crit", 400_000)))
+
+    def _pulse(self) -> float:
+        phase = (self._now() % self.pulse) / self.pulse
+        return 0.3 + 0.7 * (0.5 + 0.5 * math.cos(2 * math.pi * phase))  # 1 -> 0.3 -> 1
+
     def _draw_list_single(self, d, left, y, w, h):
-        name_f, tok_f = t.font(18, "bold"), t.font(16)
-        row_h = 28
+        row_h = int(self.options.get("row_height", 28))
+        name_f, tok_f = t.font(round(row_h * 0.64), "bold"), t.font(round(row_h * 0.57))
         rows = int((h - 2 * y + 6) // row_h)
         if not self.active:
             d.text((left, h / 2 - 12), "no active agents", font=t.font(20), fill=t.MUTED)
             return
-        shown = self.active[:rows] if len(self.active) <= rows else self.active[:rows - 1]
+        cap = int(self.options.get("max_rows", rows))  # e.g. 5: at most 5 sessions, then "+N more"
+        if len(self.active) <= min(cap, rows):
+            shown = self.active
+        else:
+            shown = self.active[:min(cap, rows - 1)]
         status_right = w - t.PAD
-        tok_right = status_right - d.textlength("59m", font=name_f) - 12
+        age_w = d.textlength("59m", font=name_f)
+        tok_right = status_right - age_w - 12
+        tokens = self.options.get("tokens", True)  # false: no per-session token column
         rings = self.options.get("cache_ring", False)
-        ring_x = tok_right - d.textlength("99.9M", font=tok_f) - 18
-        name_right = (ring_x - 16 if rings else tok_right - d.textlength("99.9M", font=tok_f)) - 10
+        ring_x = tok_right - (d.textlength("99.9M", font=tok_f) + 18 if tokens else 0)
+        name_right = (ring_x - 16 if rings else tok_right - (d.textlength("99.9M", font=tok_f) if tokens else 0)) - 10
         for i, s in enumerate(shown):
             ry = y + i * row_h
             t.icon(d, left, ry + 2, s.tool, 22)
             self._status(d, status_right, ry, s, name_f)
-            t.text_right(d, tok_right, ry + 2, t.human_count(s.today), tok_f, t.MUTED)
+            if tokens:
+                t.text_right(d, tok_right, ry + 2, t.human_count(s.today), tok_f, t.MUTED)
             if rings:
                 t.ring(d, ring_x, ry + 12, 9, 3, s.cache_hit, t.cache_color(s.cache_hit))
             text_x = left + 30
-            d.text((text_x, ry), t.fit_text(d, Path(s.cwd).name or "?", name_f, name_right - text_x), font=name_f, fill=t.TEXT)
+            name_color = self._context_color(s) if self.options.get("context_colors", False) else t.TEXT
+            d.text((text_x, ry), t.fit_text(d, Path(s.cwd).name or "?", name_f, name_right - text_x), font=name_f, fill=name_color)
         if len(shown) < len(self.active):
             d.text((left + 30, y + len(shown) * row_h), f"+{len(self.active) - len(shown)} more",
                    font=name_f, fill=t.MUTED)

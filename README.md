@@ -70,10 +70,13 @@ frameless widgets sit inside a shared card, and update intervals are positive.
 |---|---|---|
 | `port` | `"auto"` | serial device path, or `"auto"` to find the awake screen |
 | `brightness` | `50` | 0–100 while the desktop is active |
+| `night_brightness` | unset | 0–100 at night. Brightness fades from `brightness` to this as the sun goes from 6° above to 6° below the horizon (and back at dawn). Sun position is computed locally, no network |
+| `latitude`, `longitude` | from the weather widget | location for `night_brightness` |
 | `dim_brightness` | `10` | 0–100 while the Omarchy screensaver runs |
 | `follow_session` | `true` | dim during the screensaver; turn off when locked or when all monitors are off |
 | `flip` | `false` | rotate 180° if the screen is mounted upside down |
 | `theme` | `"current"` | an Omarchy theme name, or `"current"` to follow the active theme live |
+| `muted_lift` | `0` | 0–1: brighten secondary text from the theme's dark foreground toward the main text color |
 
 ### Widgets
 
@@ -81,14 +84,15 @@ Every widget also accepts `interval`: the number of seconds between data refresh
 
 | type | options | shows |
 |---|---|---|
-| `clock_weather` | all `clock` + `weather` options, `icon_behind`, `ampm_behind`, `hourly_icon_behind`, `stale` (`text` / `icon`), `hours` (5), `humidity_min` (0), `temp_size` (90), `hilo_size` (24), `date_size` (38), `time_size` (132), `condense_one` (true), `arrangement` (`split` / `row`: everything side by side in one short band), `style = "dense"` | full-width card: time and date on the left; current weather and a 5-hour forecast on the right |
+| `clock_weather` | all `clock` + `weather` options, `icon_behind`, `ampm_behind`, `hourly_icon_behind`, `stale` (`text` / `icon`), `hours` (5), `humidity_min` (0), `temp_size` (90), `hilo_size` (24), `date_size` (38), `time_size` (132), `condense_one` (true), `arrangement` (`split` / `row`: everything side by side in one short band), `split` (0.5, time/weather boundary for `row`), `show` (`both` / `time` / `weather`: one part per card), `gap` (14), `forecast` / `hilo` (true; false leaves them to a `forecast` widget), `style = "dense"` | full-width card: time and date on the left; current weather and a 5-hour forecast on the right |
 | `clock` | `format` (strftime, default `%-I:%M`), `ampm` | time, AM/PM, date |
 | `weather` | `latitude`, `longitude`, `units` (`imperial`/`metric`) | current conditions + 5-hour forecast (Open-Meteo) |
-| `cpu` | `label`, `color`, `size` (30), `temp_unit` (`°C`), `watt_digits` (2), `temp_warn`, `temp_crit`, `power_warn`, `power_crit`, `style = "dense"` | one-line load / temperature / package power over a history graph, per-core bars |
-| `gpu` | `index`, `label`, `color`, `size` (30), `temp_unit` (`°C`), `temp_warn`, `temp_crit`, `power_warn`, `power_crit`, `style = "dense"` | one-line NVIDIA load / temperature / power over a history graph, VRAM bar |
+| `cpu` | `label`, `color`, `size` (30), `temp_unit` (`°C`), `watt_digits` (2), `ram_bar` (system RAM bar under the core bars), `ram_pct` (RAM % in the headline), `power` (true; false hides wattage), `mem_numbers` (true; false hides RAM/VRAM used/total), `temp_warn`, `temp_crit`, `power_warn`, `power_crit`, `style = "dense"` | one-line load / temperature / package power over a history graph, per-core bars |
+| `gpu` | `index`, `label`, `color`, `size` (30), `temp_unit` (`°C`), `power` (true; false hides wattage), `mem_numbers` (true; false hides RAM/VRAM used/total), `temp_warn`, `temp_crit`, `power_warn`, `power_crit`, `style = "dense"` | one-line NVIDIA load / temperature / power over a history graph, VRAM bar |
 | `ai_usage` | `providers` (`claude`, `codex`), `resets` (`always` / `soon`), `window_labels` (true; false = thick 5h / thin 7d rows), `stale` (`text` / `icon`), `style = "dense"` (one provider per 80 px card) | 5-hour / 7-day limits with pace markers |
-| `memory` | `color`, `label`, `size` (30), `style = "dense"` | one-line RAM %, used/total, full-width bar |
-| `agents` | `active_minutes` (30), `working_seconds` (60), `rate_minutes` (5), `stats` (`top` / `left` / `none`), `rows` (`double` / `single`), `status` (`text` / `dot`), `pulse` (10 s breathing cycle), `pulse_step` (1 s redraw), `cache_ring` (per-session cache-hit ring), `style = "dense"`, `show_history` | token burn (tok/min, today) and active Claude Code / Codex sessions |
+| `memory` | `color`, `label`, `size` (30), `style` (`dense`, `strip`: one line, `card`: headline + bar with no graph, `vertical`: icon over a bottom-up bar for a narrow card), `mem_numbers` (true; false hides used/total) | one-line RAM %, used/total, full-width bar |
+| `agents` | `active_minutes` (30), `working_seconds` (60), `rate_minutes` (5), `stats` (`top` / `left` / `none`), `rows` (`double` / `single`), `max_rows` (cap before "+N more"), `row_height` (28), `time_colors` (working dot colored by how long the job has run, idle timer by how long it has sat idle: green → yellow at `time_warn` 10 min → red at `time_crit` 20 min), `context_colors` (name → yellow → red as context grows: `context_warn_pct`/`context_crit_pct` 60/85 % of the window when logged (Codex), else `context_warn`/`context_crit` 200K/400K tokens (Claude)), `status` (`text` / `dot`), `pulse` (10 s breathing cycle), `pulse_step` (1 s redraw), `cache_ring` (per-session cache-hit ring), `tokens` (true; false hides the per-session token column), `style = "dense"`, `show_history` | token burn (tok/min, today) and active Claude Code / Codex sessions |
+| `forecast` | weather options, `hours` (12), `columns` (2), `fill` (fonts and icons sized to the rows, shrunk to fit the width), `summary` (hi/lo/humidity header), `stale` | hourly forecast list wrapped into columns; shares the weather fetch |
 | `burn` | `rate_minutes` (5), `cache_ring` | one line: rolling tokens/min, rolling cache-hit ring, today's running total |
 | `network` | `interface` (default: all physical), `smooth` (samples, 2) | download/upload rate, never below the K unit (not in the default layout) |
 
@@ -96,6 +100,9 @@ Presets: `default` uses words and 30 px stat lines. `compact` uses icons,
 weather symbols behind temperatures, seven hourly columns, and a breathing
 working dot. `compact2` keeps that style but puts the date in a column and everything
 in the top band side by side (140 px), giving the CPU/GPU/RAM row more height.
+`compact3` gives each job its own box: time, current weather (with hi/lo/humidity),
+a one-column forecast down the right edge, CPU with its RAM bar, GPU, and a bottom
+card sized for exactly 5 agent sessions plus "+N more".
 `dense-vertical` uses a 120 px header with five vertically stacked forecast
 hours, a 72 px hardware row, side-by-side AI cards, and full-width single-line
 session rows. When three or fewer sessions are active, it uses the spare space
@@ -139,6 +146,8 @@ DESIGN.md.
   identical every run, good for before/after comparisons). `--live 6` uses real
   data collected for 6 seconds so graphs fill in. `-l <layout>` picks a preset,
   and `--crop X,Y,W,H -z 3` zooms into one region to check pixel detail.
+  `--show` keeps an `imv` window open on the PNG; imv reloads on every render, so
+  one window always shows the latest preview.
 
 - `scripts/colortest.py` sends identical color swatches through the full-frame and
   partial-update encodings, to check the pixel format. Stop the service before running it.

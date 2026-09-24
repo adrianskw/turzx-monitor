@@ -78,17 +78,15 @@ class Gpu(Widget):
         color = t.role(o.get("color", "magenta"))
         strip = h - 24  # VRAM row along the bottom
         t.sparkline(d, t.PAD, 6, w - 2 * t.PAD, strip - 12, self.history, color=color, dim=True)
-        t.stat_line(d, w, 6, o.get("label", "GPU"), [
+        fields = [
             (t.pct_text(self.util), color),
             (t.temp_text(self.temp, o.get("temp_unit", "°C")), t.threshold_color(self.temp, o.get("temp_warn", 75), o.get("temp_crit", 83))),
-            (t.watts_text(self.power, 3), t.threshold_color(self.power, o.get("power_warn", 180), o.get("power_crit", 210))),
-        ], size=o.get("size", 30))
+        ]
+        if o.get("power", True):
+            fields.append((t.watts_text(self.power, 3), t.threshold_color(self.power, o.get("power_warn", 180), o.get("power_crit", 210))))
+        t.stat_line(d, w, 6, o.get("label", "GPU"), fields, size=o.get("size", 30))
         vram = 100 * self.mem_used / self.mem_total if self.mem_total else 0
-        f = t.font(18, "bold")
-        t.text_right(d, w - t.PAD, strip - 4, f"{t.human_bytes(self.mem_used)}/{t.human_bytes(self.mem_total)}", f, t.TEXT)
-        # reserve the widest possible label so the bar never changes length
-        widest = f"999.9M/{t.human_bytes(self.mem_total)}"
-        t.bar(d, t.PAD, strip, w - 2 * t.PAD - d.textlength(widest, font=f) - 10, 14, vram, color)
+        t.usage_bar(d, w, h, vram, self.mem_used, self.mem_total, color, o.get("mem_numbers", True))
 
     def _draw_dense(self, d, w, h):
         o = self.options

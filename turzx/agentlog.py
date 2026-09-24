@@ -39,6 +39,9 @@ class Session:
         self.today = 0  # fresh tokens since local midnight
         self.cache_read = 0  # input tokens served from cache, today
         self.input_total = 0  # all input tokens (fresh + cache writes + cache reads), today
+        self.context = 0  # current context size: all input tokens of the latest turn
+        self.window: int | None = None  # context window, when the log states it (Codex)
+        self.turn_start = 0.0  # when the latest prompt was sent: the running job's start
 
     @property
     def cache_hit(self) -> float | None:
@@ -64,6 +67,33 @@ def _tokens(tool: str, entry: dict) -> tuple[int, int, int]:
     u = payload["info"].get("last_token_usage") or {}
     inp, cached = u.get("input_tokens", 0), u.get("cached_input_tokens", 0)  # Codex input includes cached
     return max(0, inp - cached) + u.get("output_tokens", 0), cached, inp
+
+
+def _context(tool: str, entry: dict) -> tuple[int, int | None]:
+    """(context tokens of this turn, window size if logged); zeros if no usage here."""
+    if tool == "claude":
+        msg = entry.get("message")
+        u = msg.get("usage") if isinstance(msg, dict) else None
+        if not u:
+            return 0, None
+        return u.get("input_tokens", 0) + u.get("cache_creation_input_tokens", 0) + u.get("cache_read_input_tokens", 0), None
+    payload = entry.get("payload") or {}
+    info = payload.get("info") if payload.get("type") == "token_count" else None
+    if not info:
+        return 0, None
+    return (info.get("last_token_usage") or {}).get("input_tokens", 0), info.get("model_context_window")
+
+
+def _is_prompt(tool: str, entry: dict) -> bool:
+    """True for the entry that starts a turn: a typed prompt (Claude) or task_started (Codex)."""
+    if tool == "codex":
+        return entry.get("type") == "event_msg" and (entry.get("payload") or {}).get("type") == "task_started"
+    if entry.get("type") != "user" or entry.get("isMeta") or entry.get("isSidechain"):
+        return False
+    content = (entry.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return True
+    return isinstance(content, list) and any(isinstance(c, dict) and c.get("type") == "text" for c in content)
 
 
 class TokenLog:
@@ -102,13 +132,21 @@ class TokenLog:
                 if not isinstance(entry, dict):
                     continue
                 cwd = entry.get("cwd") or (entry.get("payload") or {}).get("cwd") or ""
+                ctx, window = _context(s.tool, entry)
                 fresh, read, inp = _tokens(s.tool, entry)
                 ts = _ts(entry["timestamp"]) if (fresh or inp) and "timestamp" in entry else None
+                prompt = _ts(entry["timestamp"]) if "timestamp" in entry and _is_prompt(s.tool, entry) else None
             except (ValueError, TypeError, AttributeError, KeyError, OverflowError, UnicodeError):
                 # A damaged record must not hide valid records later in the file.
                 continue
             if not s.cwd:
                 s.cwd = cwd
+            if ctx:
+                s.context = ctx  # latest turn wins: the current context size
+            if window:
+                s.window = window
+            if prompt is not None:
+                s.turn_start = prompt
             if ts is not None and ts >= midnight:
                 s.today += fresh
                 s.cache_read += read

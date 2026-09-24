@@ -29,6 +29,8 @@ class ClockWeather(Widget):
 
     def update(self):
         self.clock.update()
+        if self.options.get("show") == "time":  # a time-only card never needs the weather
+            return
         # Weather is slow (HTTP); fetch it off to the side so the clock never stalls.
         if not self._fetching and time.monotonic() >= self._weather_due:
             self._fetching = True
@@ -36,6 +38,8 @@ class ClockWeather(Widget):
 
     def update_once(self):
         self.clock.update()
+        if self.options.get("show") == "time":
+            return
         self.weather.update()
 
     def draw(self, d, w, h):
@@ -208,25 +212,55 @@ class ClockWeather(Widget):
 
     # ---- arrangement = "row": everything side by side in one short band ----------
     def _draw_row(self, d, w, h):
-        """[Wed/Sep/30] [time]  |  [temp with faint icon] [hi/lo/humidity] [hourly list].
+        """[Wed/Sep/30] [time]  |  [condition + temp] [hi/lo/humidity] [hourly list].
         Nothing is stacked under anything else, so the pane can be ~130 px tall."""
+        # show = "time" / "weather": draw only that part, over the full width, so time and
+        # current weather can each be their own card (two widgets with the same options)
+        show = self.options.get("show", "both")
+        if show != "weather":
+            right = w - t.PAD if show == "time" else round(w * float(self.options.get("split", 0.5))) - 4
+            self._draw_row_time(d, right, h)
+        if show == "time":
+            return
+        mid = round(w * float(self.options.get("split", 0.5)))  # time | weather boundary
+        left = t.PAD if show == "weather" else mid + int(self.options.get("gap", 14))
+        self._draw_row_weather(d, left, w, h)
+
+    def _draw_row_time(self, d, time_right, h):
+        """Date column (left, or right with date_side = "right"), then the time as large as fits."""
         now = self.clock.now
-        mid = w // 2
         faint = t.blend(t.CARD, t.MUTED, 0.15)
 
-        # date as a column on the left; each line right-aligned to a 3-char column
+        # date as a 3-char column; each line right-aligned so "9" and "30" line up
         date_f = t.font(int(self.options.get("date_size", 28)))
-        col_right = t.PAD + d.textlength("Wed", font=date_f)
+        col_w = d.textlength("Wed", font=date_f)
+        if self.options.get("date_side", "left") == "right":
+            col_right = time_right
+            time_right = time_right - col_w - 14
+            time_left = t.PAD
+        else:
+            col_right = t.PAD + col_w
+            time_left = col_right + 14
         step = (h - 20) / 3
         for i, part in enumerate((now.strftime("%a"), now.strftime("%b"), now.strftime("%-d"))):
             t.text_right(d, col_right, 8 + i * step, part, date_f, t.MUTED)
 
-        # time: as large as fits between the date column and the centre line
-        time_right = mid - 4
-        time_f = t.fit_font(d, "12:59", int(self.options.get("time_size", 112)), time_right - col_right - 14)
+        # time: as large as fits beside the date column, and within the card height
+        ref = t.font(100, "bold")
+        _, ry0, _, ry1 = d.textbbox((0, 0), "0", font=ref)
+        max_by_height = int((h - 16) / ((ry1 - ry0) / 100))
+        time_f = t.fit_font(d, "12:59", min(int(self.options.get("time_size", 112)), max_by_height),
+                            time_right - time_left)
         _, dy0, _, dy1 = d.textbbox((0, 0), "0", font=time_f)
         time_y = h / 2 - (dy0 + dy1) / 2
-        if self.options.get("ampm", True):
+        if self.options.get("ampm", True) and self.options.get("ampm_style", "watermark") == "side":
+            # plain AM/PM just left of the digits, top-aligned with them (for wide boxes where a
+            # height-limited watermark would hide behind digits of the same size)
+            hm_w = d.textlength(now.strftime(self.options.get("format", "%-I:%M")), font=time_f)
+            af = t.font(round(time_f.size * 0.3), "bold")
+            _, ay0, _, _ = d.textbbox((0, 0), "AM", font=af)
+            t.text_right(d, time_right - hm_w - 12, time_y + dy0 - ay0, now.strftime("%p"), af, t.MUTED)
+        elif self.options.get("ampm", True):
             ampm = now.strftime("%p")
             ref = t.font(100, "bold")
             _, ry0, _, ry1 = d.textbbox((0, 0), ampm, font=ref)
@@ -237,17 +271,19 @@ class ClockWeather(Widget):
             t.text_right(d, time_right, h / 2 - (py0 + py1) / 2, ampm, pm_f, faint)
         t.text_right(d, time_right, time_y, now.strftime(self.options.get("format", "%-I:%M")), time_f, t.TEXT)
 
+    def _draw_row_weather(self, d, left, w, h):
+        """Current temperature and conditions, hi/lo/humidity, optional hourly list."""
         snap = self.weather.snapshot
-        left = mid + 14
         if snap is None:
             d.text((left, h / 2 - 12), self.weather.error or "loading weather…", font=t.font(18), fill=t.MUTED)
             return
 
         # hourly list on the far right: "11am [icon] 72°" rows
-        hours = snap.hours[:int(self.options.get("hours", 5))]
+        # forecast = false: time + current conditions only (the list lives in a forecast widget)
+        hours = snap.hours[:int(self.options.get("hours", 5))] if self.options.get("forecast", True) else ()
         lf, tf, gf = t.font(16, "bold"), t.font(18, "bold"), t.font(20)
         list_right = w - t.PAD
-        list_left = list_right - d.textlength("12am", font=lf) - 30 - d.textlength("100°", font=tf)
+        list_left = (list_right - d.textlength("12am", font=lf) - 30 - d.textlength("100°", font=tf)) if hours else list_right + 16
         if hours:
             row = (h - 16) / len(hours)
             label_right = list_left + d.textlength("12am", font=lf)
@@ -261,23 +297,41 @@ class ClockWeather(Widget):
         hs = int(self.options.get("hilo_size", 22))
         hf = t.font(hs, "bold")
         hilo_right = list_left - 16
-        hstep = (h - 20) / 3
-        t.text_right(d, hilo_right, 8, f"↑{snap.high:.0f}°", hf, t.RED)
-        t.text_right(d, hilo_right, 8 + hstep, f"↓{snap.low:.0f}°", hf, t.CYAN)
-        t.text_right(d, hilo_right, 8 + 2 * hstep, f"\U000F058E{t.pct_text(snap.humidity)}", hf, t.MUTED)
+        if self.options.get("hilo", True):  # hilo = false: the forecast widget shows them
+            hstep = (h - 20) / 3
+            t.text_right(d, hilo_right, 8, f"↑{snap.high:.0f}°", hf, t.RED)
+            t.text_right(d, hilo_right, 8 + hstep, f"↓{snap.low:.0f}°", hf, t.CYAN)
+            t.text_right(d, hilo_right, 8 + 2 * hstep, f"\U000F058E{t.pct_text(snap.humidity)}", hf, t.MUTED)
+            temp_right = hilo_right - d.textlength("↑100°", font=hf) - 14
+        else:
+            temp_right = hilo_right
 
-        # current temperature: shrink-to-fit between the centre line and the hi/lo column,
-        # with the weather glyph large and faint behind it
-        temp_right = hilo_right - d.textlength("↑100°", font=hf) - 14
+        # Current temperature and condition fit between the left edge and hi/lo.
         temp = f"{snap.temperature:.0f}°"
-        temp_f = t.fit_font(d, temp, int(self.options.get("temp_size", 96)), temp_right - left)
+        icon = glyph(snap.code, snap.is_day)
+        icon_left = self.options.get("icon_left", False)
+        if icon_left:
+            size = int(self.options.get("temp_size", 96))
+            while True:
+                temp_f = t.font(size, "bold")
+                icon_f = t.font(max(12, round(size * 0.58)))
+                ix0, iy0, ix1, iy1 = d.textbbox((0, 0), icon, font=icon_f)
+                if d.textlength(temp, font=temp_f) + (ix1 - ix0) + 8 <= temp_right - left or size <= 12:
+                    break
+                size -= 1
+        else:
+            temp_f = t.fit_font(d, temp, int(self.options.get("temp_size", 96)), temp_right - left)
         x0, y0, x1, y1 = d.textbbox((0, 0), temp, font=temp_f)
         tx, ty = temp_right - d.textlength(temp, font=temp_f), h / 2 - (y0 + y1) / 2
-        icon = glyph(snap.code, snap.is_day)
-        icon_f = t.font(round(temp_f.size * 4 / 3))
-        ix0, iy0, ix1, iy1 = d.textbbox((0, 0), icon, font=icon_f)
-        cx, cy = tx + (x0 + x1) / 2, ty + (y0 + y1) / 2
-        d.text((cx - (ix0 + ix1) / 2, cy - (iy0 + iy1) / 2), icon, font=icon_f, fill=t.blend(t.CARD, t.ORANGE, 0.2))
+        if icon_left:
+            d.text((tx - ix1 - 8, h / 2 - (iy0 + iy1) / 2), icon, font=icon_f,
+                   fill=t.ORANGE if snap.is_day else t.MAGENTA)
+        else:
+            icon_f = t.font(round(temp_f.size * 4 / 3))
+            ix0, iy0, ix1, iy1 = d.textbbox((0, 0), icon, font=icon_f)
+            cx, cy = tx + (x0 + x1) / 2, ty + (y0 + y1) / 2
+            d.text((cx - (ix0 + ix1) / 2, cy - (iy0 + iy1) / 2), icon, font=icon_f,
+                   fill=t.blend(t.CARD, t.ORANGE, 0.2))
         d.text((tx, ty), temp, font=temp_f, fill=t.TEXT)
         if self.options.get("stale") == "icon" and self.weather.freshness_text(snap):
             t.stale_mark(d, left, 6, 22)
