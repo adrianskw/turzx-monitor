@@ -150,32 +150,37 @@ def bar(d: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, pct: float, colo
         step: float = 1.0) -> None:
     """Bar whose fill is exact to the pixel, quantized to `step` percent."""
     x, y, w, h = round(x), round(y), round(w), round(h)
+    if w <= 0 or h <= 0:
+        return
     pct = max(0.0, min(100.0, round(pct / step) * step))
     r = min(BAR_RADIUS, h // 2)
-    d.rounded_rectangle((x, y, x + w, y + h), radius=r, fill=TRACK)
+    # PIL rectangles include their end pixel, so (x, x + w - 1) is exactly w pixels wide
+    d.rounded_rectangle((x, y, x + w - 1, y + h - 1), radius=r, fill=TRACK)
     fill_w = round(w * pct / 100)
     if fill_w <= 0:
         return
     # Clip the fill to the bar outline so small values keep their true width
     # instead of being inflated to a full rounded cap.
-    mask = Image.new("L", (w + 1, h + 1), 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, w, h), radius=r, fill=255)
-    mask.paste(0, (fill_w, 0, w + 1, h + 1))
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, w - 1, h - 1), radius=r, fill=255)
+    mask.paste(0, (fill_w, 0, w, h))
     d._image.paste(color or level_color(pct), (x, y), mask)
 
 
 def vbar(d: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, pct: float, color, step: float = 1.0) -> None:
     """Vertical bar filling bottom-up, exact to the pixel, quantized to `step` percent."""
     x, y, w, h = round(x), round(y), round(w), round(h)
+    if w <= 0 or h <= 0:
+        return
     pct = max(0.0, min(100.0, round(pct / step) * step))
     r = min(BAR_RADIUS, w // 2)
-    d.rounded_rectangle((x, y, x + w, y + h), radius=r, fill=TRACK)
+    d.rounded_rectangle((x, y, x + w - 1, y + h - 1), radius=r, fill=TRACK)
     fill_h = round(h * pct / 100)
     if fill_h <= 0:
         return
-    mask = Image.new("L", (w + 1, h + 1), 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, w, h), radius=r, fill=255)
-    mask.paste(0, (0, 0, w + 1, h + 1 - fill_h))
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, w - 1, h - 1), radius=r, fill=255)
+    mask.paste(0, (0, 0, w, h - fill_h))
     d._image.paste(color, (x, y), mask)
 
 

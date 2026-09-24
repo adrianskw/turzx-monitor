@@ -142,8 +142,8 @@ These come from iterating on the real panel. Keep them when adding widgets.
 - **Bars show the real value.** `bar()` clips an exact-width fill to the rounded
   track, instead of drawing a rounded fill that can't be narrower than its end
   caps. That was the original "low resolution" bug: a 12 px tall core bar
-  couldn't show anything under about 45 %. Per-core CPU bars snap to 10 % steps
-  (about 2.7 px each); VRAM, RAM and AI usage use 1 % steps (1.2–2 px each).
+  couldn't show anything under about 45 %. Regular CPU bars use 5 % steps by
+  default; dense CPU bars use 10 %. VRAM, RAM and AI usage use 1 % steps.
 - **Squarish corners.** Cards use a 4 px radius and bars 3 px.
 - **One grid.** Every row splits at x=400, and the bottom row also splits at 600,
   so the card edges line up down the screen. Row heights are 190 / 90 / 200.

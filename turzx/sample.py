@@ -60,7 +60,6 @@ def populate(widget: Widget) -> None:
         widget.total, widget.temp, widget.power = 37.0, 56.0, 42.0
         widget.cores = [18, 45, 32, 62, 24, 57, 38, 74, 21, 49, 35, 55]
         widget.history = deque((32 + 12 * sin(i / 5) + i / 8 for i in range(60)), maxlen=60)
-        widget.ram = SimpleNamespace(percent=62.5, used=20 * GIB, total=32 * GIB)
     elif isinstance(widget, Forecast):
         _weather(widget.weather)
     elif isinstance(widget, Gpu):

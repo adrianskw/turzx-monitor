@@ -26,6 +26,7 @@ HOURS = 5  # hourly forecast columns shown by this widget
 FORECAST_HOURS = 24  # fetched, so layouts can show more (clock_weather `hours`, forecast widget)
 _CACHE: dict = {}  # url -> (time.time(), WeatherSnapshot): widgets showing the same place share one fetch
 _CACHE_LOCK = threading.Lock()
+_FETCH_LOCKS: dict[str, threading.Lock] = {}
 CACHE_SECONDS = 60
 
 
@@ -86,10 +87,17 @@ class Weather(Widget):
             + ("&temperature_unit=fahrenheit" if imperial else "")
         )
         with _CACHE_LOCK:
-            hit = _CACHE.get(url)
-        if hit and time.time() - hit[0] < CACHE_SECONDS:  # another widget just fetched this
-            self.snapshot, self.error = hit[1], None
-            return
+            fetch_lock = _FETCH_LOCKS.setdefault(url, threading.Lock())
+        # Only one widget per location fetches. Waiters recheck the cache after it finishes.
+        with fetch_lock:
+            with _CACHE_LOCK:
+                hit = _CACHE.get(url)
+            if hit and time.time() - hit[0] < CACHE_SECONDS:
+                self.snapshot, self.error = hit[1], None
+                return
+            self._fetch(url, imperial)
+
+    def _fetch(self, url: str, imperial: bool) -> None:
         try:
             with urllib.request.urlopen(url, timeout=15) as r:
                 data = json.load(r)

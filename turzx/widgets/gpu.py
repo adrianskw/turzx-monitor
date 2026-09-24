@@ -25,7 +25,8 @@ class Gpu(Widget):
         self._sample = bool(options.get("_sample", False))
         self._next_init = 0.0
         self._nvml_ready = False
-        self.util = self.temp = self.power = 0.0
+        self.util = self.temp = 0.0
+        self.power = None
         self.mem_used = self.mem_total = 0
         n = t.smooth_samples(options, self.interval)  # rolling means for the displayed numbers
         self._avg = {k: t.Rolling(n) for k in ("util", "temp", "power")}
@@ -53,7 +54,6 @@ class Gpu(Widget):
         try:
             util = pynvml.nvmlDeviceGetUtilizationRates(h).gpu
             temp = pynvml.nvmlDeviceGetTemperature(h, pynvml.NVML_TEMPERATURE_GPU)
-            power = pynvml.nvmlDeviceGetPowerUsage(h) / 1000
             mem = pynvml.nvmlDeviceGetMemoryInfo(h)
         except pynvml.NVMLError:
             self.handle = None
@@ -63,7 +63,12 @@ class Gpu(Widget):
         self.history.append(self._graph_avg.add(util))  # graph: rolling mean over `graph_smooth` s
         self.util = self._avg["util"].add(util)
         self.temp = self._avg["temp"].add(temp)
-        self.power = self._avg["power"].add(power)
+        self.power = None
+        if self.options.get("power", True):
+            try:
+                self.power = self._avg["power"].add(pynvml.nvmlDeviceGetPowerUsage(h) / 1000)
+            except pynvml.NVMLError:
+                pass  # power is optional; keep the other GPU readings
         self.mem_used, self.mem_total = mem.used, mem.total
 
     def draw(self, d, w, h):
@@ -82,7 +87,7 @@ class Gpu(Widget):
             (t.pct_text(self.util), color),
             (t.temp_text(self.temp, o.get("temp_unit", "°C")), t.threshold_color(self.temp, o.get("temp_warn", 75), o.get("temp_crit", 83))),
         ]
-        if o.get("power", True):
+        if o.get("power", True) and self.power is not None:
             fields.append((t.watts_text(self.power, 3), t.threshold_color(self.power, o.get("power_warn", 180), o.get("power_crit", 210))))
         t.stat_line(d, w, 6, o.get("label", "GPU"), fields, size=o.get("size", 30))
         vram = 100 * self.mem_used / self.mem_total if self.mem_total else 0
@@ -95,12 +100,14 @@ class Gpu(Widget):
             t.text_right(d, w - t.PAD, 8, "n/a", t.font(27, "bold"), t.MUTED)
             return
         color = t.role(o.get("color", "magenta"))
-        t.fields_right(d, w - t.PAD, 8, [
+        fields = [
             (f"{self.util:.0f}%", color),
             (f"{self.temp:.0f}{o.get('temp_unit', '°')}",
              t.threshold_color(self.temp, o.get("temp_warn", 75), o.get("temp_crit", 83))),
-            (f"{self.power:.0f}W", t.threshold_color(self.power, o.get("power_warn", 180), o.get("power_crit", 210))),
-        ], t.font(27, "bold"), gap=" ")
+        ]
+        if o.get("power", True) and self.power is not None:
+            fields.append((f"{self.power:.0f}W", t.threshold_color(self.power, o.get("power_warn", 180), o.get("power_crit", 210))))
+        t.fields_right(d, w - t.PAD, 8, fields, t.font(27, "bold"), gap=" ")
         vram = 100 * self.mem_used / self.mem_total if self.mem_total else 0
         label = f"{t.human_bytes(self.mem_used)}/{t.human_bytes(self.mem_total)}"
         f = t.font(12, "bold")

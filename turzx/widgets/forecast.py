@@ -41,6 +41,9 @@ class Forecast(Widget):
                 (f"\U000F058E{t.pct_text(snap.humidity)}", t.MUTED)], sf, gap=" ")
             y += 30
         hours = snap.hours[:self.hours]
+        if not hours:
+            d.text((t.PAD, y + 8), "forecast unavailable", font=t.font(16), fill=t.MUTED)
+            return
         per_col = -(-len(hours) // self.columns)  # ceil
         col_w = (w - 2 * t.PAD) / self.columns
         row_h = (h - y - 10) / per_col

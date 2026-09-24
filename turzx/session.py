@@ -21,8 +21,9 @@ def locked() -> bool:
 
 def _hyprctl(what: str) -> list:
     try:
-        return json.loads(_run("hyprctl", what, "-j") or "[]")
-    except json.JSONDecodeError:
+        data = json.loads(_run("hyprctl", what, "-j") or "[]")
+        return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+    except (json.JSONDecodeError, TypeError):
         return []
 
 

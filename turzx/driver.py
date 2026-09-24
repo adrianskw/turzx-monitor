@@ -12,7 +12,6 @@ import time
 from math import ceil
 from pathlib import Path
 
-import numpy as np
 import serial
 from PIL import Image
 from serial.tools.list_ports import comports
@@ -45,16 +44,23 @@ def _chunk_join(data: bytes) -> bytes:
 
 
 def _pixels(image: Image.Image, bgra: bool) -> tuple[bytes, int]:
-    rgba = np.asarray(image.convert("RGBA"))
+    rgba = image.convert("RGBA")
     if bgra:
-        return np.take(rgba, (2, 1, 0, 3), axis=-1).tobytes(), 4
-    return np.take(rgba, (2, 1, 0), axis=-1).tobytes(), 3
+        return rgba.tobytes("raw", "BGRA"), 4
+    return rgba.tobytes("raw", "BGR"), 3
 
 
 def find_port() -> str | None:
     ports = list(comports())
     for p in ports:
         if p.serial_number == AWAKE_SERIAL or (p.vid, p.pid) in AWAKE_IDS:
+            return p.device
+    return None
+
+
+def find_sleep_port() -> str | None:
+    for p in comports():
+        if p.serial_number == "CT21INCH" or (p.vid, p.pid) in SLEEP_IDS:
             return p.device
     return None
 
@@ -79,8 +85,11 @@ class TurzxDisplay:
     def __init__(self, port: str = "auto", brightness: int = 50, flip: bool = False):
         if port == "auto":
             port = find_port()
+            if port is None and (sleep_port := find_sleep_port()) is not None:
+                log.info("waking sleeping display on %s", sleep_port)
+                port = wake(sleep_port)
             if port is None:
-                raise OSError("Turzx display not found (is it plugged in and awake?)")
+                raise OSError("Turzx display not found (is it plugged in?)")
         self.flip = flip
         self._count = 0
         # Set when the screen drops a partial update and asks for a resend; the

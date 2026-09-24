@@ -19,6 +19,7 @@ once no matter how many widgets show token data.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from collections import deque
@@ -34,6 +35,9 @@ class Session:
         self.tool = tool
         self.path = path
         self.offset = 0
+        self.identity: tuple[int, int] | None = None
+        self.size = 0
+        self.mtime_ns = 0
         self.cwd = ""
         self.mtime = 0.0
         self.today = 0  # fresh tokens since local midnight
@@ -99,28 +103,41 @@ def _is_prompt(tool: str, entry: dict) -> bool:
 class TokenLog:
     def __init__(self):
         self.sessions: dict[Path, Session] = {}
-        self.events: deque[tuple[float, int, int, int]] = deque()  # (ts, fresh, cache_read, input_total), last hour
+        self.events: deque[tuple[float, int, int, int, Path]] = deque()  # (ts, fresh, cache_read, input_total, path)
         self.day = None
         self._lock = threading.Lock()
         self._refreshed = 0.0
 
-    def _candidates(self, midnight: float):
+    def _candidates(self, cutoff: float):
         for tool, root, pattern in (("claude", CLAUDE_DIR, "*/*.jsonl"), ("codex", CODEX_DIR, "*/*/*/*.jsonl")):
             for path in root.glob(pattern):
                 try:
-                    mtime = path.stat().st_mtime
+                    stat = path.stat()
                 except OSError:
                     continue
-                if mtime >= midnight:
-                    yield tool, path, mtime
+                if stat.st_mtime >= cutoff:
+                    yield tool, path, stat
 
     def _read_new(self, s: Session, midnight: float) -> bool:
         try:
             with s.path.open("rb") as f:
+                stat = os.fstat(f.fileno())
+                identity = (stat.st_dev, stat.st_ino)
+                if s.identity is not None and (identity != s.identity or stat.st_size < s.offset):
+                    # A replaced/truncated log is a new session, even at the same path.
+                    self.events = deque(e for e in self.events if e[4] != s.path)
+                    s.offset = s.today = s.cache_read = s.input_total = s.context = 0
+                    s.window = None
+                    s.cwd = ""
+                    s.turn_start = 0.0
                 f.seek(s.offset)
                 chunk = f.read()
         except OSError:
             return False
+        s.identity = identity
+        s.size = stat.st_size
+        s.mtime_ns = stat.st_mtime_ns
+        s.mtime = stat.st_mtime
         end = chunk.rfind(b"\n")
         if end < 0:
             return True
@@ -147,34 +164,34 @@ class TokenLog:
                 s.window = window
             if prompt is not None:
                 s.turn_start = prompt
-            if ts is not None and ts >= midnight:
-                s.today += fresh
-                s.cache_read += read
-                s.input_total += inp
+            if ts is not None:
+                if ts >= midnight:
+                    s.today += fresh
+                    s.cache_read += read
+                    s.input_total += inp
                 if ts >= hour_ago:
-                    self.events.append((ts, fresh, read, inp))
+                    self.events.append((ts, fresh, read, inp, s.path))
         return True
 
     def refresh(self, max_age: float = 2.0) -> None:
         """Read new log lines. Cheap to call from several widgets: skips if refreshed recently."""
         with self._lock:
             now = time.time()
-            if now - self._refreshed < max_age:
+            if 0 <= now - self._refreshed < max_age:
                 return
             self._refreshed = now
             today = datetime.now().date()
             midnight = datetime.combine(today, datetime.min.time()).timestamp()
             if today != self.day:  # new day: start counting from scratch
                 self.day, self.sessions, self.events = today, {}, deque()
-            for tool, path, mtime in self._candidates(midnight):
+            for tool, path, stat in self._candidates(min(midnight, now - 3600)):
                 s = self.sessions.get(path)
                 if s is None:
                     s = self.sessions[path] = Session(tool, path)
-                if mtime != s.mtime:
-                    if self._read_new(s, midnight):
-                        s.mtime = mtime
-            while self.events and self.events[0][0] < now - 3600:  # e[0] is the timestamp
-                self.events.popleft()
+                if (stat.st_mtime_ns != s.mtime_ns or stat.st_size != s.size
+                        or (stat.st_dev, stat.st_ino) != s.identity):
+                    self._read_new(s, midnight)
+            self.events = deque(e for e in self.events if e[0] >= now - 3600)
 
     def rate(self, minutes: float) -> float:
         """Rolling burn: fresh tokens per minute over the last `minutes`."""

@@ -173,7 +173,17 @@ class App:
         self.running = True
         self._mode_future: Future | None = None
         self._next_session_check = 0.0
+        self._last_wall: float | None = None
         self._theme_mtime = self._theme_stamp()
+
+    def _check_clock(self, now: float) -> None:
+        """A backward wall-clock correction must not defer updates for its duration."""
+        if self._last_wall is not None and now < self._last_wall - 1:
+            log.info("wall clock moved backward; rescheduling widgets")
+            self._next_session_check = self._next_sun_check = 0.0
+            for slot in self.slots:
+                slot.next_due = slot.next_frame = 0.0
+        self._last_wall = now
 
     def connect(self):
         if self.preview:
@@ -205,6 +215,7 @@ class App:
 
     def watch_session(self, now: float) -> None:
         """Every couple of seconds: follow lock/screensaver state and theme changes."""
+        self._check_clock(now)
         if self._update_sun(now) and self.mode == session.ON and self.display is not None:
             log.info("brightness %d (sun)", self.brightness)
             self.display.set_brightness(self.brightness)
@@ -225,7 +236,11 @@ class App:
                     if self.mode != session.OFF:
                         self.repaint()
         if self._mode_future is not None and self._mode_future.done():
-            new = self._mode_future.result()
+            try:
+                new = self._mode_future.result()
+            except Exception:
+                log.exception("session state check failed; retrying")
+                new = self.mode
             self._mode_future = None
             self._next_session_check = now + 2
             if new != self.mode:
@@ -253,6 +268,7 @@ class App:
             self.repaint()  # frames were skipped while off
 
     def schedule(self, now: float) -> None:
+        self._check_clock(now)
         for s in self.slots:
             if s.future is None and now >= s.next_due:
                 s.future = self.pool.submit(_run_update, s.widget)

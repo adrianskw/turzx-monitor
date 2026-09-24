@@ -1,7 +1,7 @@
+import math
 import time
 from collections import deque
 from pathlib import Path
-from types import SimpleNamespace
 
 import psutil
 
@@ -29,6 +29,14 @@ class Cpu(Widget):
 
     def __init__(self, **options):
         super().__init__(**options)
+        if options.get("ram_bar") or options.get("ram_pct"):
+            raise ValueError("CPU RAM options were removed; use a memory widget")
+        try:
+            self._core_step = float(options.get("core_step", 5))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("core_step must be between 0 and 100") from exc
+        if isinstance(options.get("core_step"), bool) or not math.isfinite(self._core_step) or not 0 < self._core_step <= 100:
+            raise ValueError("core_step must be between 0 and 100")
         self.history = deque([0.0] * 60, maxlen=60)
         self.cores: list[float] = []
         self.total = 0.0
@@ -39,7 +47,6 @@ class Cpu(Widget):
         n = t.smooth_samples(options, self.interval)
         self._avg = {k: t.Rolling(n) for k in ("total", "temp", "power")}
         self._core_avg: list[t.Rolling] = []
-        self._ram_avg = t.Rolling(n)
         self._n = n
         # the graph is smoothed too (`graph_smooth` seconds, 0 = raw samples)
         self._graph_avg = t.Rolling(t.smooth_samples({"smooth": options.get("graph_smooth", 2)}, self.interval))
@@ -50,14 +57,16 @@ class Cpu(Widget):
         rapl = Path("/sys/class/powercap/intel-rapl:0")
         try:
             uj = int((rapl / "energy_uj").read_text())
-        except OSError:
-            return
+        except (OSError, ValueError):
+            return None
         now = time.monotonic()
-        if self._energy:
+        power = None
+        if self._energy is not None:
             t0, e0 = self._energy
-            if uj >= e0:  # skip counter wraparound
-                self.power = (uj - e0) / 1e6 / (now - t0)
+            if uj >= e0 and now > t0:  # skip counter wraparound and repeated timestamps
+                power = (uj - e0) / 1e6 / (now - t0)
         self._energy = (now, uj)
+        return power
 
     def update(self):
         current = psutil.cpu_times(percpu=True)
@@ -75,12 +84,19 @@ class Cpu(Widget):
         temps = sensors.get("k10temp") or sensors.get("coretemp") or []
         temp = next((s.current for s in temps if s.label in ("Tctl", "Package id 0")), None)
         self.temp = None if temp is None else self._avg["temp"].add(temp)
-        self._read_power()
-        if self.options.get("ram_bar", False) or self.options.get("ram_pct", False):
-            vm = psutil.virtual_memory()
-            self.ram = SimpleNamespace(percent=self._ram_avg.add(vm.percent), used=vm.used, total=vm.total)
-        if self.power is not None:
-            self.power = self._avg["power"].add(self.power)
+        if self.options.get("power", True):
+            power = self._read_power()
+            self.power = self._avg["power"].add(power) if power is not None else None
+        else:
+            self.power = None
+
+    @staticmethod
+    def _visible_cores(cores: list[float], limit: int) -> list[float]:
+        """Group only when needed; preserve isolated hot cores with a group maximum."""
+        if len(cores) <= limit:
+            return cores
+        return [max(cores[i * len(cores) // limit:(i + 1) * len(cores) // limit])
+                for i in range(limit)]
 
     def draw(self, d, w, h):
         t.card(d, w, h)
@@ -89,8 +105,7 @@ class Cpu(Widget):
         if o.get("style") == "dense":
             self._draw_dense(d, w, h, color)
             return
-        ram = self.options.get("ram_bar", False) and getattr(self, "ram", None)
-        strip = h - (48 if ram else 24)  # per-core bars along the bottom (RAM bar below them)
+        strip = h - 24  # per-core bars along the bottom
         # history graph sits faintly behind the headline
         t.sparkline(d, t.PAD, 6, w - 2 * t.PAD, strip - 12, self.history, color=color, dim=True)
         fields = [(t.pct_text(self.total), color)]
@@ -98,38 +113,38 @@ class Cpu(Widget):
             fields.append((t.temp_text(self.temp, o.get("temp_unit", "°C")), t.threshold_color(self.temp, o.get("temp_warn", 75), o.get("temp_crit", 85))))
         if self.power is not None and o.get("power", True):
             fields.append((t.watts_text(self.power, int(o.get("watt_digits", 2))), t.threshold_color(self.power, o.get("power_warn", 60), o.get("power_crit", 80))))
-        if o.get("ram_pct", False) and getattr(self, "ram", None):  # system RAM % after the CPU readings
-            ram_color = t.role(o.get("ram_color", "cyan"))
-            fields += [(o.get("ram_label", "\U000F061A"), t.MUTED), (t.pct_text(self.ram.percent), ram_color)]
         t.stat_line(d, w, 6, o.get("label", "CPU"), fields, size=o.get("size", 30))
-        # whole-pixel bars and exactly 4 px gaps; leftover pixels split between the two ends
-        n, gap = len(self.cores) or 1, 4
+        # Every bar the same whole number of pixels, a multiple of the step count so each
+        # `core_step` % (5) fills the same number of pixels (1 px per 5 % on a 20 px bar);
+        # leftover space goes evenly into the gaps (at least 2 px), the rest to the two ends.
         span = w - 2 * t.PAD
-        bw = (span - gap * (n - 1)) // n
+        # Reserve at least two pixels per bar so moderate load remains visible.
+        cores = self._visible_cores(self.cores, max(1, span // 4))
+        step = self._core_step
+        n, steps, min_gap = len(cores) or 1, round(100 / step), 2
+        available = max(1, (span - min_gap * (n - 1)) // n)
+        bw = available // steps * steps or available
+        gap = (span - bw * n) // (n - 1) if n > 1 else 0
         x = t.PAD + (span - bw * n - gap * (n - 1)) // 2
-        for i, pct in enumerate(self.cores):
-            t.bar(d, x + i * (bw + gap), strip, bw, 14, pct, color, step=10)
-        if ram:  # system memory under the CPU, like VRAM under the GPU
-            t.usage_bar(d, w, h, ram.percent, ram.used, ram.total, t.role(o.get("ram_color", "cyan")),
-                        o.get("mem_numbers", True))
+        for i, pct in enumerate(cores):
+            t.bar(d, x + i * (bw + gap), strip, bw, 14, pct, color, step=step)
 
     def _draw_dense(self, d, w, h, color):
         o = self.options
         d.text((t.PAD, 7), o.get("label", "\U000F0EE0"), font=t.font(28), fill=t.MUTED)
         temp = f"{self.temp:.0f}{o.get('temp_unit', '°')}" if self.temp is not None else "—"
-        watts = f"{self.power:.0f}W" if self.power is not None else "—"
-        t.fields_right(d, w - t.PAD, 8, [
+        fields = [
             (f"{self.total:.0f}%", color),
             (temp, t.threshold_color(self.temp, o.get("temp_warn", 75), o.get("temp_crit", 85))),
-            (watts, t.threshold_color(self.power, o.get("power_warn", 60), o.get("power_crit", 80))),
-        ], t.font(27, "bold"), gap=" ")
+        ]
+        if o.get("power", True):
+            watts = f"{self.power:.0f}W" if self.power is not None else "—"
+            fields.append((watts, t.threshold_color(self.power, o.get("power_warn", 60), o.get("power_crit", 80))))
+        t.fields_right(d, w - t.PAD, 8, fields, t.font(27, "bold"), gap=" ")
         t.sparkline(d, t.PAD, h - 30, w - 2 * t.PAD, 9, self.history.copy(), color=color, dim=True)
         # Keep each core bar positive even on machines with many logical cores.
         limit = max(1, (w - 2 * t.PAD) // 7)
-        cores = self.cores
-        if len(cores) > limit:
-            cores = [sum(cores[i * len(cores) // limit:(i + 1) * len(cores) // limit]) /
-                     ((i + 1) * len(cores) // limit - i * len(cores) // limit) for i in range(limit)]
+        cores = self._visible_cores(self.cores, limit)
         if cores:
             slot = (w - 2 * t.PAD) / len(cores)
             for i, pct in enumerate(cores):
