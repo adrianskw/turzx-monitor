@@ -101,6 +101,7 @@ def populate(widget: Widget) -> None:
             session.context, session.window = context, window
             session.model = "gpt-6.6-astra" if tool == "codex" else "claude-opus-5-5"
             session.effort = {"turzx-5in-display": "xhigh", "landing-page": "medium"}.get(name, "high")
+            session.title = "checkout redesign" if name == "landing-page" else ""  # a /rename
             widget.active.append(session)
     elif isinstance(widget, Burn):
         widget.rate, widget.total_today, widget.cache_hit = 18_500, 3_400_000, 96.0

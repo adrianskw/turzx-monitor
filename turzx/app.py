@@ -58,8 +58,21 @@ def _contains(outer: tuple[int, int, int, int], inner: tuple[int, int, int, int]
     return ox <= x and oy <= y and x + w <= ox + ow and y + h <= oy + oh
 
 
+def _env_location() -> dict:
+    """Location from $TURZX_LATITUDE / $TURZX_LONGITUDE, so it can stay out of the layouts
+    (e.g. in a systemd drop-in). Empty unless both are set."""
+    lat, lon = os.environ.get("TURZX_LATITUDE"), os.environ.get("TURZX_LONGITUDE")
+    if not (lat and lon):
+        return {}
+    try:
+        return {"latitude": float(lat), "longitude": float(lon)}
+    except ValueError as exc:
+        raise SystemExit("TURZX_LATITUDE / TURZX_LONGITUDE must be numbers") from exc
+
+
 def load_config(path: Path, sample: bool = False) -> tuple[dict, list[Slot], list[tuple[int, int, int, int]]]:
     cfg = tomllib.loads(path.read_text())
+    home = _env_location()  # fills in where the layout gives no location
     cards = [_box(c.get("box"), f"card[{i}]") for i, c in enumerate(cfg.get("card", []), 1)]
     for i, card in enumerate(cards):
         for j, other in enumerate(cards[:i], 1):
@@ -69,6 +82,8 @@ def load_config(path: Path, sample: bool = False) -> tuple[dict, list[Slot], lis
     for i, spec in enumerate(cfg.get("widget", []), 1):
         spec = dict(spec)
         kind = spec.pop("type", None)
+        if kind in ("weather", "clock_weather", "forecast") and spec.get("show") != "time":
+            spec = {**home, **spec}
         label = f"widget[{i}] ({kind or 'missing type'})"
         box = _box(spec.pop("box", None), label)
         frame = spec.pop("frame", True)
@@ -92,7 +107,7 @@ def load_config(path: Path, sample: bool = False) -> tuple[dict, list[Slot], lis
     for slot in slots:
         if slot.widget.kind == "agents":
             slot.widget.bind_history_sources(sources)
-    return cfg.get("display", {}), slots, cards
+    return {**home, **cfg.get("display", {})}, slots, cards
 
 
 def background(size: tuple[int, int], cards: list[tuple]) -> Image.Image:

@@ -52,10 +52,12 @@ class Cpu(Widget):
         self._graph_avg = t.Rolling(t.smooth_samples({"smooth": options.get("graph_smooth", 2)}, self.interval))
         self._cpu_times = None if options.get("_sample", False) else psutil.cpu_times(percpu=True)
         # ram = "column": icon over a vertical RAM bar at the card's right edge;
-        # ram = "bar": a full-width RAM bar under the core bars. Unset: no RAM here.
+        # ram = "bar": a full-width RAM bar under the core bars;
+        # ram = "inline": a RAM bar in the headline, between the icon and the readings, with
+        # the graph under the headline instead of behind it. Unset: no RAM here.
         self.ram_mode = options.get("ram")
-        if self.ram_mode not in (None, "column", "bar"):
-            raise ValueError('ram must be "column" or "bar"')
+        if self.ram_mode not in (None, "column", "bar", "inline"):
+            raise ValueError('ram must be "column", "bar" or "inline"')
         self.ram_pct = None
         self._ram_avg = t.Rolling(n)
 
@@ -118,12 +120,18 @@ class Cpu(Widget):
         column = 30 if self.ram_mode == "column" else 0  # RAM column width at the right edge
         right = w - column - (8 if column else 0)  # everything else ends here
         show_cores = o.get("cores", True)  # false: no per-core bars (the RAM bar, if any, takes their row)
-        strip = h - (48 if self.ram_mode == "bar" and show_cores else 24)  # bottom bar row(s)
+        rows = (self.ram_mode == "bar") + show_cores  # bar rows along the bottom
+        strip = h - 24 * rows if rows else h - 4  # no bars: the graph fills the card
         fields = [(t.pct_text(self.total), color)]
         if self.temp is not None:
             fields.append((t.temp_text(self.temp, o.get("temp_unit", "°C")), t.threshold_color(self.temp, o.get("temp_warn", 75), o.get("temp_crit", 85))))
         if self.power is not None and o.get("power", True):
             fields.append((t.watts_text(self.power, int(o.get("watt_digits", 2))), t.threshold_color(self.power, o.get("power_warn", 60), o.get("power_crit", 80))))
+        if self.ram_mode == "inline":
+            t.stat_line(d, w, 6, o.get("label", "CPU"), fields, size=o.get("size", 30))
+            if self.ram_pct is not None:
+                t.graph_with_bar(d, w, h, o.get("size", 30), self.history, color, self.ram_pct, ram_color, fields)
+            return
         # Every bar the same whole number of pixels, a multiple of the step count so each
         # `core_step` % (5) fills the same number of pixels (1 px per 5 % on a 20 px bar);
         # leftover space goes evenly into the gaps (at least 2 px), the rest to the two ends.

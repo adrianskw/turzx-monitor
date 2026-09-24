@@ -360,6 +360,21 @@ def headline_centre(y: int, size: int = 30) -> float:
     return (y0 + y1) / 2
 
 
+def graph_with_bar(d: ImageDraw.ImageDraw, w: int, h: int, size: int, history, color,
+                   pct: float, bar_color, fields, y: int = 6, gap: str = " ") -> None:
+    """Body of a card under its stat_line at y: a memory bar in line with the headline,
+    from just right of its icon to just left of its readings (`fields`, fixed width), then
+    the full-width history graph from just under the digits (100 % touches their bottom)
+    to the card's bottom inset."""
+    f = font(size, "bold")
+    _, _, _, digits = ImageDraw.Draw(Image.new("L", (1, 1))).textbbox((0, y), "0", font=f)
+    readings = d.textlength(gap.join(text for text, _ in fields), font=f)
+    left = PAD + ICON_BOX + 10
+    bar(d, left, round(headline_centre(y, size) - 7), w - PAD - readings - 14 - left, 14, pct, bar_color)
+    top, bottom = round(digits) + 4, h - 10
+    sparkline(d, PAD, top, w - 2 * PAD, bottom - top, history, color=color, dim=True)
+
+
 def stat_line(d: ImageDraw.ImageDraw, w: int, y: int, label: str, fields, size: int = 30, gap: str = " ") -> None:
     """Card headline: label on the left, fixed-width colored readings right-aligned. An icon
     label is drawn at a common size (ICON_BOX), centred on the digits."""

@@ -12,6 +12,9 @@ from turzx.widgets.weather import Weather, glyph
 @register("clock_weather")
 class ClockWeather(Widget):
     interval = 1.0
+    # (font size, digit bottom y) of the last time drawn by a row-style time card; a
+    # weather card with align = "time" matches it (cards draw in layout order)
+    time_digits: tuple[int, float] | None = None
 
     def __init__(self, **options):
         super().__init__(**options)
@@ -333,15 +336,25 @@ class ClockWeather(Widget):
         if raised:  # small AM/PM top-right of the digits, like a superscript: reserve its width
             raised_f = t.font(int(self.options.get("ampm_size", 22)), "bold")
             time_right -= d.textlength("AM", font=raised_f) + 6
+        below = self.options.get("ampm", True) and self.options.get("ampm_style", "watermark") == "below"
+        room = h - 16  # height the digits may use
+        if below:  # small AM/PM under the digits, right-aligned with them: leave it a line
+            below_f = t.font(int(self.options.get("ampm_size", 18)), "bold")
+            _, by0, _, by1 = d.textbbox((0, 0), "AM", font=below_f)
+            room -= by1 - by0 + 8
         # time: as large as fits beside the date column, and within the card height
         ref = t.font(100, "bold")
         _, ry0, _, ry1 = d.textbbox((0, 0), "0", font=ref)
-        max_by_height = int((h - 16) / ((ry1 - ry0) / 100))
+        max_by_height = int(room / ((ry1 - ry0) / 100))
         time_f = t.fit_font(d, "12:59", min(int(self.options.get("time_size", 112)), max_by_height),
                             time_right - time_left)
         _, dy0, _, dy1 = d.textbbox((0, 0), "0", font=time_f)
         time_y = h / 2 - (dy0 + dy1) / 2
-        if raised:
+        if below:  # digits and AM/PM centred together as one block
+            block = (dy1 - dy0) + 8 + (by1 - by0)
+            time_y = (h - block) / 2 - dy0
+            t.text_right(d, time_right, time_y + dy1 + 8 - by0, now.strftime("%p"), below_f, t.MUTED)
+        elif raised:
             _, ay0, _, _ = d.textbbox((0, 0), "AM", font=raised_f)
             d.text((time_right + 6, time_y + dy0 - ay0), now.strftime("%p"), font=raised_f, fill=t.MUTED)
         elif self.options.get("ampm", True) and self.options.get("ampm_style", "watermark") == "side":
@@ -361,6 +374,8 @@ class ClockWeather(Widget):
             _, py0, _, py1 = d.textbbox((0, 0), ampm, font=pm_f)
             t.text_right(d, time_right, h / 2 - (py0 + py1) / 2, ampm, pm_f, faint)
         t.text_right(d, time_right, time_y, now.strftime(self.options.get("format", "%-I:%M")), time_f, t.TEXT)
+        # for a weather card with align = "time": digit size and bottom edge, card-relative
+        ClockWeather.time_digits = (time_f.size, time_y + dy1)
 
     def _draw_row_weather(self, d, left, w, h):
         """Current temperature and conditions, hi/lo/humidity, optional hourly list."""
@@ -401,8 +416,10 @@ class ClockWeather(Widget):
         temp = f"{snap.temperature:.0f}°"
         icon = glyph(snap.code, snap.is_day)
         icon_left = self.options.get("icon_left", False)
+        match = self.options.get("align") == "time" and ClockWeather.time_digits
         if icon_left:
-            size = int(self.options.get("temp_size", 96))
+            # align = "time": the time card's digit size, if it fits (3-digit temps shrink)
+            size = match[0] if match else int(self.options.get("temp_size", 96))
             while True:
                 temp_f = t.font(size, "bold")
                 icon_f = t.font(max(12, round(size * 0.58)))
@@ -414,8 +431,10 @@ class ClockWeather(Widget):
             temp_f = t.fit_font(d, temp, int(self.options.get("temp_size", 96)), temp_right - left)
         x0, y0, x1, y1 = d.textbbox((0, 0), temp, font=temp_f)
         tx, ty = temp_right - d.textlength(temp, font=temp_f), h / 2 - (y0 + y1) / 2
+        if match:  # digits sit on the same bottom line as the time's
+            ty = match[1] - y1
         if icon_left:
-            d.text((tx - ix1 - 8, h / 2 - (iy0 + iy1) / 2), icon, font=icon_f,
+            d.text((tx - ix1 - 8, ty + (y0 + y1) / 2 - (iy0 + iy1) / 2), icon, font=icon_f,
                    fill=t.ORANGE if snap.is_day else t.MAGENTA)
         else:
             icon_f = t.font(round(temp_f.size * 4 / 3))

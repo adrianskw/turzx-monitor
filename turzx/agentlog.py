@@ -28,6 +28,7 @@ from pathlib import Path
 
 CLAUDE_DIR = Path.home() / ".claude/projects"
 CODEX_DIR = Path.home() / ".codex/sessions"
+CODEX_INDEX = Path.home() / ".codex/session_index.jsonl"  # {"id", "thread_name"} per named thread
 MAX_RATE_MINUTES = 24 * 60
 EVENT_SECONDS = MAX_RATE_MINUTES * 60
 FINGERPRINT_BYTES = 256
@@ -54,6 +55,12 @@ class Session:
         self.turn_start = 0.0  # when the latest prompt was sent: the running job's start
         self.model = ""  # latest model id, e.g. "claude-opus-5-5" / "gpt-6-sol"
         self.effort = ""  # latest reasoning effort: low / medium / high / xhigh / max
+        self.title = ""  # name given with /rename (Claude custom-title, Codex thread name)
+
+    @property
+    def label(self) -> str:
+        """The session's name: its /rename title, else its working directory's name."""
+        return self.title or Path(self.cwd).name or "?"
 
     @property
     def cache_hit(self) -> float | None:
@@ -135,6 +142,8 @@ class TokenLog:
         self.day = None
         self._lock = threading.Lock()
         self._refreshed = 0.0
+        self._codex_names: dict[str, str] = {}
+        self._codex_index = None  # (mtime_ns, size) of CODEX_INDEX when last read
 
     def _candidates(self, cutoff: float):
         for tool, root, pattern in (("claude", CLAUDE_DIR, "*/*.jsonl"), ("codex", CODEX_DIR, "*/*/*/*.jsonl")):
@@ -167,7 +176,7 @@ class TokenLog:
                     s.window = None
                     s.cwd = ""
                     s.turn_start = 0.0
-                    s.model = s.effort = ""
+                    s.model = s.effort = s.title = ""
                 f.seek(s.offset)
                 chunk = f.read()
                 end = chunk.rfind(b"\n")
@@ -201,6 +210,7 @@ class TokenLog:
                 prompt = _ts(entry["timestamp"]) if "timestamp" in entry and _is_prompt(s.tool, entry) else None
                 model = _model(s.tool, entry)
                 effort = _effort(s.tool, entry)
+                title = entry.get("customTitle") if entry.get("type") == "custom-title" else None
             except (ValueError, TypeError, AttributeError, KeyError, OverflowError, UnicodeError):
                 # A damaged record must not hide valid records later in the file.
                 continue
@@ -216,6 +226,8 @@ class TokenLog:
                 s.model = model
             if effort:
                 s.effort = effort
+            if isinstance(title, str):
+                s.title = title.strip()  # latest rename wins; an empty one clears it
             if ts is not None:
                 if ts >= midnight:
                     s.today += fresh
@@ -244,6 +256,28 @@ class TokenLog:
                         or (stat.st_dev, stat.st_ino) != s.identity):
                     self._read_new(s, midnight)
             self.events = deque(e for e in self.events if e[0] >= now - EVENT_SECONDS)
+            self._name_codex()
+
+    def _name_codex(self) -> None:
+        """Codex keeps thread names outside the rollout logs, in one small index file."""
+        try:
+            stat = CODEX_INDEX.stat()
+            key = (stat.st_mtime_ns, stat.st_size)
+            if key != self._codex_index:
+                names = {}
+                for line in CODEX_INDEX.read_text(errors="replace").splitlines():
+                    try:
+                        entry = json.loads(line)
+                        if isinstance(entry, dict) and isinstance(entry.get("id"), str):
+                            names[entry["id"]] = str(entry.get("thread_name") or "").strip()
+                    except ValueError:
+                        continue
+                self._codex_names, self._codex_index = names, key
+        except OSError:
+            self._codex_names, self._codex_index = {}, None
+        for s in self.sessions.values():
+            if s.tool == "codex":  # rollout-<date>T<time>-<thread id>.jsonl
+                s.title = self._codex_names.get(s.path.stem[-36:], "")
 
     def rate(self, minutes: float) -> float:
         """Rolling burn: fresh tokens per minute over the last `minutes`."""

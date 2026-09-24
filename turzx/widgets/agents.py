@@ -1,5 +1,6 @@
 """Active Claude Code / Codex sessions and token burn (data from turzx.agentlog)."""
 
+import json
 import math
 import time
 from pathlib import Path
@@ -9,6 +10,7 @@ from turzx.agentlog import Session
 from turzx.widget import Widget, register
 
 
+CLAUDE_SETTINGS = Path.home() / ".claude/settings.json"  # autoCompactWindow: Claude's usable context
 EFFORT = {"medium": "med"}  # short forms for the detail line; others fit as logged
 
 
@@ -28,9 +30,12 @@ class Agents(Widget):
         self.detail_rows = options.get("detail_rows", 0)
         if type(self.detail_rows) is not int or self.detail_rows < 0:
             raise ValueError("detail_rows must be a nonnegative integer")
-        self.claude_window = options.get("claude_window", 1_000_000)
-        if type(self.claude_window) is not int or self.claude_window <= 0:
-            raise ValueError("claude_window must be a positive integer")
+        # "auto": Claude Code's autoCompactWindow from ~/.claude/settings.json (compaction
+        # fires there, so that is the usable window), else 1M
+        self.claude_window = options.get("claude_window", "auto")
+        if self.claude_window != "auto" and (type(self.claude_window) is not int or self.claude_window <= 0):
+            raise ValueError('claude_window must be "auto" or a positive integer')
+        self._settings = (None, None)  # (mtime_ns, autoCompactWindow) of CLAUDE_SETTINGS
         self.name_weight = options.get("name_weight", "regular")
         if not isinstance(self.name_weight, str) or self.name_weight not in t.FONTS:
             raise ValueError(f"name_weight must be one of: {', '.join(t.FONTS)}")
@@ -132,7 +137,7 @@ class Agents(Widget):
             tok_right = w - t.PAD - state_w - 12
             t.text_right(d, tok_right, ry, tokens, f, t.MUTED)
             name_room = tok_right - d.textlength("999.9M", font=f) - 10 - (t.PAD + 32)
-            d.text((t.PAD + 32, ry), t.fit_text(d, Path(s.cwd).name or "?", f, name_room), font=f, fill=t.TEXT)
+            d.text((t.PAD + 32, ry), t.fit_text(d, s.label, f, name_room), font=f, fill=t.TEXT)
         if len(shown) < len(self.active):
             d.text((t.PAD + 32, y + 48 + len(shown) * 32), f"+{len(self.active) - len(shown)} more",
                    font=f, fill=t.MUTED)
@@ -176,7 +181,7 @@ class Agents(Widget):
                 t.ring(d, right - 11, ry + 16, 11, 4, s.cache_hit, t.cache_color(s.cache_hit))
                 right -= 32
             room = right - text_x
-            d.text((text_x, ry - 1), t.fit_text(d, Path(s.cwd).name or "?", name_f, room), font=name_f, fill=t.TEXT)
+            d.text((text_x, ry - 1), t.fit_text(d, s.label, name_f, room), font=name_f, fill=t.TEXT)
             d.text((text_x, ry + 20), t.human_count(s.today), font=sub_f, fill=t.MUTED)
         if len(shown) < len(self.active):
             d.text((left + 34, y + len(shown) * row_h + 4), f"+{len(self.active) - len(shown)} more",
@@ -205,7 +210,7 @@ class Agents(Widget):
         for i, session in enumerate(shown):
             y = 49 + i * 22
             t.icon(d, 15, y + 1, session.tool, 19)
-            name = t.fit_text(d, Path(session.cwd).name or "?", name_f, w - 255)
+            name = t.fit_text(d, session.label, name_f, w - 255)
             d.text((43, y), name, font=name_f, fill=t.TEXT)
             t.text_right(d, w - 141, y, t.human_count(session.today), token_f, t.MUTED)
             if self.options.get("cache_ring", False):
@@ -240,40 +245,63 @@ class Agents(Widget):
 
     def _context_color(self, s: Session):
         """Name color by context size: normal, then yellow, then red as the context grows.
-        Uses % of the window when the log states it (Codex), else token counts (Claude)."""
+        Uses % of the window when it is known (logged by Codex; Claude's autoCompactWindow
+        or `claude_window`), else token counts."""
         o = self.options
-        if s.window:
-            pct = 100 * s.context / s.window
+        window = s.window or self._known_claude_window()
+        if window:
+            pct = 100 * s.context / window
             return t.ramp(pct, float(o.get("context_warn_pct", 60)), float(o.get("context_crit_pct", 85)))
         return t.ramp(s.context, float(o.get("context_warn", 200_000)), float(o.get("context_crit", 400_000)))
+
+    def _known_claude_window(self) -> int | None:
+        """Claude's context window when configured: `claude_window`, else Claude Code's
+        autoCompactWindow setting (re-read when the settings file changes)."""
+        if self.claude_window != "auto":
+            return self.claude_window
+        try:
+            mtime = CLAUDE_SETTINGS.stat().st_mtime_ns
+            if mtime != self._settings[0]:
+                value = json.loads(CLAUDE_SETTINGS.read_text()).get("autoCompactWindow")
+                ok = type(value) is int and value > 0
+                self._settings = (mtime, value if ok else None)
+        except (OSError, ValueError, AttributeError):
+            self._settings = (None, None)
+        return self._settings[1]
 
     def _pulse(self) -> float:
         phase = (self._now() % self.pulse) / self.pulse
         return 0.3 + 0.7 * (0.5 + 0.5 * math.cos(2 * math.pi * phase))  # 1 -> 0.3 -> 1
 
     def _window(self, s: Session) -> int:
-        """Context window: logged by Codex; Claude doesn't log it, so `claude_window` (1M)."""
-        return s.window if s.window is not None and s.window > 0 else self.claude_window
+        """Context window: logged by Codex; Claude doesn't log it, so autoCompactWindow or
+        `claude_window`, else 1M."""
+        if s.window is not None and s.window > 0:
+            return s.window
+        return self._known_claude_window() or 1_000_000
 
     def _draw_detailed(self, d, left, y, w, h):
         """Few sessions (<= `detail_rows`): two lines each. Name + status, then model, a
         context-fill bar and context tokens. Names stay neutral: the bar shows fill."""
-        name_f = t.font(23, self.name_weight)
+        slot = min((h - 2 * y) / len(self.active), 72)
+        # names shrink with the slot (23 px at 64+, 22 px at 60) so four sessions still fit
+        name_size = min(23, round(slot * 0.36))
+        name_f = t.font(name_size, self.name_weight)
         small = t.font(16)
         small_b = t.font(16, "bold")
-        slot = min((h - 2 * y) / len(self.active), 72)
         status_right = w - t.PAD
         text_x = left + 30
         model_w = d.textlength("gpt-6.6-astra xhigh", font=small)  # longest expected model + effort
         num_w = d.textlength("99.9K", font=small_b)
         for i, s in enumerate(self.active):
             ry = y + i * slot + 2
-            t.icon(d, left, ry + 2, s.tool, 22)
+            icon = min(22, name_size)
+            t.icon(d, left, ry + name_size * 0.6 - icon / 2, s.tool, icon)
             self._status(d, status_right, ry, s, name_f)
             name_right = status_right - d.textlength("59m", font=name_f) - 12
-            d.text((text_x, ry), t.fit_text(d, Path(s.cwd).name or "?", name_f, name_right - text_x),
+            d.text((text_x, ry), t.fit_text(d, s.label, name_f, name_right - text_x),
                    font=name_f, fill=t.TEXT)
-            cy = ry + 44  # detail line centre
+            cy = ry + name_size + 21  # detail line centre
             _, y0, _, y1 = d.textbbox((0, 0), "0", font=small)
             ty = cy - (y0 + y1) / 2
             # left to right: model + effort (right-aligned in their column, so efforts line
@@ -326,9 +354,32 @@ class Agents(Widget):
                 t.ring(d, ring_x, ry + 12, 9, 3, s.cache_hit, t.cache_color(s.cache_hit))
             text_x = left + 30
             name_color = self._context_color(s) if self.options.get("context_colors", False) else t.TEXT
-            d.text((text_x, ry), t.fit_text(d, Path(s.cwd).name or "?", name_f, name_right - text_x), font=name_f, fill=name_color)
+            d.text((text_x, ry), t.fit_text(d, s.label, name_f, name_right - text_x), font=name_f, fill=name_color)
         if len(shown) < len(self.active):
             more = f"+{len(self.active) - len(shown)} more"
             if self.options.get("total", False):
                 more += f" · {len(self.active)} agents"
-            d.text((left + 30, y + len(shown) * row_h), more, font=name_f, fill=t.MUTED)
+            ry = y + len(shown) * row_h
+            d.text((left + 30, ry), more, font=name_f, fill=t.MUTED)
+            if self.options.get("summary", False):
+                self._draw_summary(d, status_right, ry, name_f)
+
+    def _draw_summary(self, d, right, y, f):
+        """Right side of the "+N more" row, over all sessions: how many are working (green
+        dot), then how many run each tool, e.g. "✳ 5  ⌨ 3  ● 2"."""
+        now = self._now()
+        working = sum(now - s.mtime < self.working_seconds for s in self.active)
+        x = right
+        if working:
+            t.text_right(d, x, y, str(working), f, t.TEXT)
+            x -= d.textlength(str(working), font=f) + 7
+            t.text_right(d, x, y, self.DOT, f, t.GREEN)
+            x -= d.textlength(self.DOT, font=f) + 16
+        for tool in ("codex", "claude"):
+            count = sum(s.tool == tool for s in self.active)
+            if not count:
+                continue
+            t.text_right(d, x, y, str(count), f, t.TEXT)
+            x -= d.textlength(str(count), font=f) + 26
+            t.icon(d, x, y + 2, tool, 20)
+            x -= 16

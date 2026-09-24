@@ -1,9 +1,10 @@
-# compact5: time, weather and a forecast column on top; CPU, GPU and RAM cards;
+# compact5: time, weather and a forecast column on top; CPU and GPU cards;
 # AI limits and agents in the bottom card.
 #   - no token counts anywhere: the limit bars (with pace ticks) and the agent dots,
 #     timers and name colors carry what matters
-#   - no wattage, memory numbers or per-core bars; the CPU card ends in a RAM bar, as
-#     the GPU card ends in a VRAM bar
+#   - no wattage, memory numbers or per-core bars; a RAM bar (teal) after the CPU icon,
+#     a VRAM bar (purple) after the GPU's, in line with the readings; the graphs
+#     sit under the numbers in a short row, leaving the height to AI limits and agents
 #   - every row shares the edges at x=315 and 630
 #   - AI limits stacked per provider: big 5h % and full-width bars sharing one scale
 
@@ -25,6 +26,7 @@ show = "time"
 date_side = "right"
 date_size = 22
 time_size = 100
+ampm_style = "below"    # small AM/PM under the time, right-aligned
 
 [[widget]]
 type = "clock_weather"
@@ -36,11 +38,12 @@ units = "imperial"
 temp_size = 84
 hilo_size = 20
 icon_left = true
+align = "time"          # temperature digits the time's size, on the same bottom line
 stale = "icon"
 
 [[widget]]
 type = "forecast"
-box = [630, 0, 170, 270]
+box = [630, 0, 170, 220]
 units = "imperial"
 hours = 8
 columns = 1
@@ -48,8 +51,8 @@ fill = true             # fonts and icons sized to the rows
 
 [[widget]]
 type = "cpu"
-box = [0, 110, 315, 160]
-ram = "bar"             # RAM bar in the CPU card, where the core bars were
+box = [0, 110, 315, 110]
+ram = "inline"          # RAM bar in the headline, after the icon
 cores = false           # no per-core bars
 power = false
 label = ""
@@ -63,9 +66,9 @@ power_crit = 80
 
 [[widget]]
 type = "gpu"
-box = [315, 110, 315, 160]
+box = [315, 110, 315, 110]
 power = false
-mem_numbers = false
+vram = "inline"         # VRAM bar in the headline, after the icon
 label = "\U000F08AE"
 temp_unit = "°"
 size = 30
@@ -76,7 +79,7 @@ power_crit = 210
 
 [[widget]]
 type = "ai_usage"
-box = [0, 270, 315, 210]
+box = [0, 220, 315, 260]
 providers = ["claude", "codex"]
 window_labels = false
 arrangement = "stacked"
@@ -84,13 +87,14 @@ stale = "icon"
 
 [[widget]]
 type = "agents"
-box = [315, 270, 485, 210]
+box = [315, 220, 485, 260]
 stats = "none"
 status = "dot"
 rows = "single"
-row_height = 36
-max_rows = 4
+row_height = 32
+max_rows = 6            # 6 sessions, then a "+N more" row
+summary = true          # on the "+N more" row: sessions per tool and how many are working
 time_colors = true      # working dot by job run time, idle timer by idle time: green -> yellow 10 min -> red 20 min
 context_colors = true   # name: -> yellow -> red as the context window fills
 tokens = false          # no per-session token counts
-detail_rows = 3         # up to 3 sessions: two lines each (model, context-fill bar); 4+: compact rows
+detail_rows = 4         # up to 4 sessions: two lines each (model, context-fill bar); 5+: compact rows

@@ -154,7 +154,7 @@ class AiUsage(Widget):
                     d.text((bx, by + block - 13), age_text, font=t.font(12), fill=t.MUTED)
 
     def _draw_stacked(self, d, w, h, y):
-        """Per provider: logo with "5h 43% | 7d 31%" on one line, then a thick 5h bar and a
+        """Per provider: logo with "5h 43%  |  7d 31%" spread across one line, then a thick 5h bar and a
         thin 7d bar, each with its reset countdown in a right-hand column. The bars share one
         width (one scale, so the pace ticks line up) and fill the rest of the card."""
         f, small = t.font(22, "bold"), t.font(17)
@@ -181,14 +181,19 @@ class AiUsage(Widget):
                 continue
             five, seven, r5, r7 = val
             pace5, pace7 = self._pace(p, r5, "5h"), self._pace(p, r7, "7d")
-            # "5h 43% | 7d 31%": labels muted; percents right-aligned in 2-digit slots so the
-            # separator and the 7d group never move
+            # "5h 43%   |   7d 31%" across the row: the 5h group after the logo, the 7d group
+            # right-aligned with the reset column, the separator centred between them. Percents
+            # sit right-aligned in 2-digit slots so nothing moves, in plain text: the bars and
+            # their pace ticks show how usage is tracking.
             space, pct_w = d.textlength(" ", font=f), d.textlength("99%", font=f)
-            x = label(x, head, "5h", t.MUTED) + space + pct_w
-            t.text_right(d, x, head - (y0 + y1) / 2, t.pct_text(five), f, self._pct_color(five, pace5))
-            x = label(x + space, head, "|", t.TRACK) + space
-            x = label(x, head, "7d", t.MUTED) + space + pct_w
-            t.text_right(d, x, head - (y0 + y1) / 2, t.pct_text(seven), f, self._pct_color(seven, pace7))
+            ty = head - (y0 + y1) / 2
+            end5 = label(x, head, "5h", t.MUTED) + space + pct_w
+            t.text_right(d, end5, ty, t.pct_text(five), f, t.TEXT)
+            start7 = right - pct_w - space - d.textlength("7d", font=f)
+            label(start7, head, "7d", t.MUTED)
+            t.text_right(d, right, ty, t.pct_text(seven), f, t.TEXT)
+            bar_x = (end5 + start7 - d.textlength("|", font=f)) / 2
+            label(bar_x, head, "|", t.TRACK)
             for win, cy, bh, pct, pace, reset in (("5h", row5, 16, five, pace5, r5), ("7d", row7, 8, seven, pace7, r7)):
                 by = round(cy - bh / 2)
                 t.bar(d, t.PAD, by, bw, bh, pct, color)
