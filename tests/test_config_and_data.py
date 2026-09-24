@@ -1,5 +1,6 @@
 """Layout validation, data freshness, and repeatable previews."""
 
+import os
 import re
 import unittest
 from pathlib import Path
@@ -44,6 +45,37 @@ class LayoutTests(unittest.TestCase):
             path.write_text('[[widget]]\ntype = "clock"\nbox = [0, 0, 100, 100]\nframe = false\n')
             with self.assertRaisesRegex(SystemExit, "containing"):
                 load_config(path)
+
+    def test_environment_location_reaches_weather_and_display(self):
+        with patch.dict(os.environ, {"TURZX_LATITUDE": "0", "TURZX_LONGITUDE": "-72.5"}, clear=True):
+            display, slots, _ = load_config(LAYOUTS / "default.toml")
+        self.assertEqual((display["latitude"], display["longitude"]), (0.0, -72.5))
+        self.assertEqual(slots[0].widget.weather.location, (0.0, -72.5))
+
+    def test_rejects_partial_or_invalid_environment_location(self):
+        cases = (
+            {"TURZX_LATITUDE": "1"},
+            {"TURZX_LATITUDE": "nan", "TURZX_LONGITUDE": "2"},
+            {"TURZX_LATITUDE": "91", "TURZX_LONGITUDE": "2"},
+            {"TURZX_LATITUDE": "1", "TURZX_LONGITUDE": "181"},
+        )
+        for values in cases:
+            with self.subTest(values=values), patch.dict(os.environ, values, clear=True):
+                with self.assertRaisesRegex(SystemExit, "TURZX_LATITUDE / TURZX_LONGITUDE"):
+                    load_config(LAYOUTS / "default.toml")
+
+    def test_rejects_invalid_widget_location(self):
+        with self.assertRaisesRegex(ValueError, "latitude must be"):
+            Weather(latitude=float("inf"), longitude=0)
+
+    def test_rejects_nonfinite_smoothing_at_load(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "layout.toml"
+            for value in ("nan", "inf", "true", '"bad"'):
+                with self.subTest(value=value):
+                    path.write_text(f'[[widget]]\ntype="cpu"\nbox=[0,0,300,90]\nsmooth={value}\n')
+                    with self.assertRaisesRegex(SystemExit, "smooth must be a finite number"):
+                        load_config(path, sample=True)
 
 
 class FreshnessTests(unittest.TestCase):

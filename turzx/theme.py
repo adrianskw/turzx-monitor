@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import tomllib
 from contextlib import contextmanager
 from functools import lru_cache
@@ -261,9 +262,13 @@ class Rolling:
 
 def smooth_samples(options: dict, interval: float, default_seconds: float = 2.0) -> int:
     """Window size in samples for a widget's `smooth` option (seconds; 0 disables)."""
-    seconds = float(options.get("smooth", default_seconds))
-    if seconds < 0:
-        raise ValueError("smooth must be >= 0 seconds")
+    value = options.get("smooth", default_seconds)
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("smooth must be a finite number >= 0 seconds") from exc
+    if isinstance(value, bool) or not math.isfinite(seconds) or seconds < 0:
+        raise ValueError("smooth must be a finite number >= 0 seconds")
     return max(1, round(seconds / interval))
 
 

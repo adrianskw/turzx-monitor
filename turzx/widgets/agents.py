@@ -248,7 +248,7 @@ class Agents(Widget):
         Uses % of the window when it is known (logged by Codex; Claude's autoCompactWindow
         or `claude_window`), else token counts."""
         o = self.options
-        window = s.window or self._known_claude_window()
+        window = self._context_window(s)
         if window:
             pct = 100 * s.context / window
             return t.ramp(pct, float(o.get("context_warn_pct", 60)), float(o.get("context_crit_pct", 85)))
@@ -273,12 +273,15 @@ class Agents(Widget):
         phase = (self._now() % self.pulse) / self.pulse
         return 0.3 + 0.7 * (0.5 + 0.5 * math.cos(2 * math.pi * phase))  # 1 -> 0.3 -> 1
 
+    def _context_window(self, s: Session) -> int | None:
+        if s.window is not None and s.window > 0:
+            return s.window
+        return self._known_claude_window() if s.tool == "claude" else None
+
     def _window(self, s: Session) -> int:
         """Context window: logged by Codex; Claude doesn't log it, so autoCompactWindow or
         `claude_window`, else 1M."""
-        if s.window is not None and s.window > 0:
-            return s.window
-        return self._known_claude_window() or 1_000_000
+        return self._context_window(s) or 1_000_000
 
     def _draw_detailed(self, d, left, y, w, h):
         """Few sessions (<= `detail_rows`): two lines each. Name + status, then model, a
@@ -317,7 +320,7 @@ class Agents(Widget):
             count_right = model_right + 14 + num_w
             t.text_right(d, count_right, ty, t.human_count(s.context) if s.context else "—", small_b, t.TEXT)
             window = self._window(s)
-            pct = min(99.0, 100 * s.context / window) if window else 0.0
+            pct = max(0.0, min(100.0, 100 * s.context / window)) if window else 0.0
             bar_left = count_right + 10
             t.bar(d, bar_left, round(cy - 4), status_right - bar_left, 8, pct, t.ACCENT)
 

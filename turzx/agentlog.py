@@ -265,13 +265,14 @@ class TokenLog:
             key = (stat.st_mtime_ns, stat.st_size)
             if key != self._codex_index:
                 names = {}
-                for line in CODEX_INDEX.read_text(errors="replace").splitlines():
-                    try:
-                        entry = json.loads(line)
-                        if isinstance(entry, dict) and isinstance(entry.get("id"), str):
-                            names[entry["id"]] = str(entry.get("thread_name") or "").strip()
-                    except ValueError:
-                        continue
+                with CODEX_INDEX.open(errors="replace") as index:
+                    for line in index:
+                        try:
+                            entry = json.loads(line)
+                            if isinstance(entry, dict) and isinstance(entry.get("id"), str):
+                                names[entry["id"]] = str(entry.get("thread_name") or "").strip()
+                        except ValueError:
+                            continue
                 self._codex_names, self._codex_index = names, key
         except OSError:
             self._codex_names, self._codex_index = {}, None

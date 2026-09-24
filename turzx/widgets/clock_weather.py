@@ -1,5 +1,7 @@
 """Clock and weather in one full-width card: time | current conditions | hourly list."""
 
+from __future__ import annotations
+
 import threading
 import time
 
@@ -12,9 +14,6 @@ from turzx.widgets.weather import Weather, glyph
 @register("clock_weather")
 class ClockWeather(Widget):
     interval = 1.0
-    # (font size, digit bottom y) of the last time drawn by a row-style time card; a
-    # weather card with align = "time" matches it (cards draw in layout order)
-    time_digits: tuple[int, float] | None = None
 
     def __init__(self, **options):
         super().__init__(**options)
@@ -29,6 +28,11 @@ class ClockWeather(Widget):
         self.weather = Weather(**options)
         self._weather_due = 0.0
         self._fetching = False
+        self._time_partner: tuple[ClockWeather, int, int] | None = None
+
+    def align_with_time(self, partner: ClockWeather, width: int, height: int) -> None:
+        """Use a time card's measured digits without relying on render order."""
+        self._time_partner = partner, width, height
 
     def _fetch_weather(self):
         try:
@@ -39,7 +43,7 @@ class ClockWeather(Widget):
 
     def update(self):
         self.clock.update()
-        if self.options.get("show") == "time":  # a time-only card never needs the weather
+        if self.options.get("show") == "time" or self.weather.location is None:
             return
         # Weather is slow (HTTP); fetch it off to the side so the clock never stalls.
         if not self._fetching and time.monotonic() >= self._weather_due:
@@ -48,7 +52,7 @@ class ClockWeather(Widget):
 
     def update_once(self):
         self.clock.update()
-        if self.options.get("show") == "time":
+        if self.options.get("show") == "time" or self.weather.location is None:
             return
         self.weather.update()
 
@@ -313,12 +317,8 @@ class ClockWeather(Widget):
         left = t.PAD if show == "weather" else mid + int(self.options.get("gap", 14))
         self._draw_row_weather(d, left, w, h)
 
-    def _draw_row_time(self, d, time_right, h):
-        """Date column (left, or right with date_side = "right"), then the time as large as fits."""
-        now = self.clock.now
-        faint = t.blend(t.CARD, t.MUTED, 0.15)
-
-        # date as a 3-char column; each line right-aligned so "9" and "30" line up
+    def _row_time_geometry(self, d, time_right, h):
+        """Measure the date column and time digits for drawing or weather alignment."""
         date_f = t.font(int(self.options.get("date_size", 28)))
         col_w = d.textlength("Wed", font=date_f)
         if self.options.get("date_side", "left") == "right":
@@ -328,10 +328,6 @@ class ClockWeather(Widget):
         else:
             col_right = t.PAD + col_w
             time_left = col_right + 14
-        step = (h - 20) / 3
-        for i, part in enumerate((now.strftime("%a"), now.strftime("%b"), now.strftime("%-d"))):
-            t.text_right(d, col_right, 8 + i * step, part, date_f, t.MUTED)
-
         raised = self.options.get("ampm", True) and self.options.get("ampm_style", "watermark") == "raised"
         if raised:  # small AM/PM top-right of the digits, like a superscript: reserve its width
             raised_f = t.font(int(self.options.get("ampm_size", 22)), "bold")
@@ -353,6 +349,25 @@ class ClockWeather(Widget):
         if below:  # digits and AM/PM centred together as one block
             block = (dy1 - dy0) + 8 + (by1 - by0)
             time_y = (h - block) / 2 - dy0
+        return date_f, col_right, time_right, time_f, time_y, dy0, dy1
+
+    def _draw_row_time(self, d, time_right, h):
+        """Date column (left, or right with date_side = "right"), then the time as large as fits."""
+        now = self.clock.now
+        faint = t.blend(t.CARD, t.MUTED, 0.15)
+        date_f, col_right, time_right, time_f, time_y, dy0, dy1 = self._row_time_geometry(d, time_right, h)
+        step = (h - 20) / 3
+        for i, part in enumerate((now.strftime("%a"), now.strftime("%b"), now.strftime("%-d"))):
+            t.text_right(d, col_right, 8 + i * step, part, date_f, t.MUTED)
+
+        raised = self.options.get("ampm", True) and self.options.get("ampm_style", "watermark") == "raised"
+        below = self.options.get("ampm", True) and self.options.get("ampm_style", "watermark") == "below"
+        if below:
+            below_f = t.font(int(self.options.get("ampm_size", 18)), "bold")
+            _, by0, _, _ = d.textbbox((0, 0), "AM", font=below_f)
+        if raised:
+            raised_f = t.font(int(self.options.get("ampm_size", 22)), "bold")
+        if below:
             t.text_right(d, time_right, time_y + dy1 + 8 - by0, now.strftime("%p"), below_f, t.MUTED)
         elif raised:
             _, ay0, _, _ = d.textbbox((0, 0), "AM", font=raised_f)
@@ -374,8 +389,6 @@ class ClockWeather(Widget):
             _, py0, _, py1 = d.textbbox((0, 0), ampm, font=pm_f)
             t.text_right(d, time_right, h / 2 - (py0 + py1) / 2, ampm, pm_f, faint)
         t.text_right(d, time_right, time_y, now.strftime(self.options.get("format", "%-I:%M")), time_f, t.TEXT)
-        # for a weather card with align = "time": digit size and bottom edge, card-relative
-        ClockWeather.time_digits = (time_f.size, time_y + dy1)
 
     def _draw_row_weather(self, d, left, w, h):
         """Current temperature and conditions, hi/lo/humidity, optional hourly list."""
@@ -416,7 +429,11 @@ class ClockWeather(Widget):
         temp = f"{snap.temperature:.0f}°"
         icon = glyph(snap.code, snap.is_day)
         icon_left = self.options.get("icon_left", False)
-        match = self.options.get("align") == "time" and ClockWeather.time_digits
+        match = None
+        if self.options.get("align") == "time" and self._time_partner is not None:
+            partner, partner_w, partner_h = self._time_partner
+            _, _, _, time_f, time_y, _, digit_bottom = partner._row_time_geometry(d, partner_w - t.PAD, partner_h)
+            match = time_f.size, time_y + digit_bottom
         if icon_left:
             # align = "time": the time card's digit size, if it fits (3-digit temps shrink)
             size = match[0] if match else int(self.options.get("temp_size", 96))

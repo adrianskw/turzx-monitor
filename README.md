@@ -60,10 +60,11 @@ To try a variant, copy `layouts/default.toml`, edit the copy, and check it with
 available for the built-in widgets, so repeated renders use the same clock and
 readings. The configured theme still determines the colors.
 
-The example layouts leave location unset. Set `latitude` and `longitude` on each
-weather or forecast widget you use to show local conditions. The same location
-also controls `night_brightness` when that option is enabled. Keep a personal
-layout outside the repository if you plan to publish your changes.
+The example layouts leave location unset. Set `TURZX_LATITUDE` and
+`TURZX_LONGITUDE` in your environment (or a private systemd user drop-in) to
+show local weather and control `night_brightness`. Keep coordinates out of
+committed layouts. A widget's own coordinates override the environment when
+you need a different location for that widget.
 
 Several widgets can share one card. Add a `[[card]]` entry with its own `box`,
 then give each widget inside it `frame = false`. The default layout uses this
@@ -78,7 +79,7 @@ frameless widgets sit inside a shared card, and update intervals are positive.
 | `port` | `"auto"` | serial device path, or `"auto"` to find the awake screen |
 | `brightness` | `50` | 0–100 while the desktop is active |
 | `night_brightness` | unset | 0–100 at night. Brightness fades from `brightness` to this as the sun goes from 6° above to 6° below the horizon (and back at dawn). Sun position is computed locally, no network |
-| `latitude`, `longitude` | from the weather widget | location for `night_brightness` |
+| `latitude`, `longitude` | environment or weather widget | location for `night_brightness` |
 | `dim_brightness` | `10` | 0–100 while the Omarchy screensaver runs |
 | `follow_session` | `true` | dim during the screensaver; turn off when locked or when all monitors are off |
 | `flip` | `false` | rotate 180° if the screen is mounted upside down |

@@ -10,7 +10,7 @@ from unittest.mock import patch
 from PIL import Image, ImageDraw
 
 from turzx import theme as t
-from turzx.app import App, Slot, load_config
+from turzx.app import App, LAYOUTS, Slot, load_config
 from turzx.sample import SAMPLE_NOW, populate
 from turzx.widgets.agents import Agents
 from turzx.widgets.ai_usage import AiUsage, reset_text
@@ -64,6 +64,16 @@ class AgentLayoutTests(unittest.TestCase):
             widget.draw(ImageDraw.Draw(Image.new("RGB", (485, 210))), 485, 210)
             detailed.assert_not_called()
 
+    def test_codex_without_window_does_not_use_claude_setting(self):
+        widget = Agents(stats="none", rows="single", claude_window=200_000)
+        populate(widget)
+        codex = next(s for s in widget.active if s.tool == "codex")
+        claude = next(s for s in widget.active if s.tool == "claude")
+        codex.window = None
+        codex.context = claude.context = 150_000
+        self.assertEqual(widget._context_color(codex), t.ramp(150_000, 200_000, 400_000))
+        self.assertEqual(widget._context_color(claude), t.ramp(75, 60, 85))
+
     def test_text_status_does_not_overlap_name_or_cache_ring(self):
         for stats in ("none", "left"):
             for rings in (False, True):
@@ -89,6 +99,28 @@ class AgentLayoutTests(unittest.TestCase):
 
 
 class WeatherIconLayoutTests(unittest.TestCase):
+    def test_missing_location_does_not_start_weather_fetch_thread(self):
+        widget = ClockWeather(arrangement="row", show="weather")
+        with patch("turzx.widgets.clock_weather.threading.Thread") as thread:
+            widget.update()
+        thread.assert_not_called()
+        self.assertEqual(widget.weather.next_delay(), widget.weather.interval)
+
+    def test_time_alignment_is_independent_of_draw_order(self):
+        _, slots, _ = load_config(LAYOUTS / "compact5.toml", sample=True)
+        clock, weather = slots[0].widget, slots[1].widget
+        populate(clock)
+        populate(weather)
+
+        def weather_pixels():
+            image = Image.new("RGB", (315, 110))
+            weather.draw(ImageDraw.Draw(image), 315, 110)
+            return image.tobytes()
+
+        before = weather_pixels()
+        clock.draw(ImageDraw.Draw(Image.new("RGB", (315, 110))), 315, 110)
+        self.assertEqual(weather_pixels(), before)
+
     def test_band_limits_hour_columns_under_three_digit_stress(self):
         widget = ClockWeather(style="band", hours=8, units="imperial")
         populate(widget)

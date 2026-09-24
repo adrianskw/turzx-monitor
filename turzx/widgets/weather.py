@@ -1,4 +1,5 @@
 import json
+import math
 import threading
 import time
 import urllib.request
@@ -52,6 +53,23 @@ def glyph(code: int, is_day: int) -> str:
     return icon
 
 
+def coordinates(options: dict) -> tuple[float, float] | None:
+    """Return a validated location, or None when no location was supplied."""
+    if "latitude" not in options and "longitude" not in options:
+        return None
+    if "latitude" not in options or "longitude" not in options:
+        raise ValueError("latitude and longitude must be set together")
+    if isinstance(options["latitude"], bool) or isinstance(options["longitude"], bool):
+        raise ValueError("latitude and longitude must be numbers")
+    try:
+        lat, lon = float(options["latitude"]), float(options["longitude"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("latitude and longitude must be numbers") from exc
+    if not math.isfinite(lat) or not math.isfinite(lon) or not -90 <= lat <= 90 or not -180 <= lon <= 180:
+        raise ValueError("latitude must be -90 to 90 and longitude -180 to 180")
+    return lat, lon
+
+
 @register("weather")
 class Weather(Widget):
     """Current conditions from Open-Meteo (no API key needed)."""
@@ -61,7 +79,8 @@ class Weather(Widget):
     def __init__(self, **options):
         super().__init__(**options)
         self.snapshot: WeatherSnapshot | None = None
-        self.error = None if "latitude" in options and "longitude" in options else "set latitude/longitude in layout.toml"
+        self.location = coordinates(options)
+        self.error = None if self.location is not None else "set TURZX_LATITUDE and TURZX_LONGITUDE"
         self.preview_now: float | None = None
 
     def freshness_text(self, snapshot: WeatherSnapshot) -> str | None:
@@ -72,15 +91,16 @@ class Weather(Widget):
         return None
 
     def next_delay(self):
-        return 60.0 if self.error else self.interval
+        return 60.0 if self.error and self.location is not None else self.interval
 
     def update(self):
-        if "latitude" not in self.options or "longitude" not in self.options:
+        if self.location is None:
             return
         imperial = self.options.get("units") == "imperial"
+        lat, lon = self.location
         url = (
             "https://api.open-meteo.com/v1/forecast"
-            f"?latitude={self.options['latitude']}&longitude={self.options['longitude']}"
+            f"?latitude={lat}&longitude={lon}"
             "&current=temperature_2m,relative_humidity_2m,weather_code,is_day"
             "&daily=temperature_2m_max,temperature_2m_min&forecast_days=2&timezone=auto"
             f"&hourly=temperature_2m,weather_code,is_day&forecast_hours={FORECAST_HOURS + 1}"

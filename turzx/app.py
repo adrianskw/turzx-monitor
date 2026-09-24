@@ -19,6 +19,7 @@ from turzx import session, sun, theme
 from turzx.driver import HEIGHT, WIDTH, PreviewDisplay, TurzxDisplay
 from turzx.widget import REGISTRY, Widget
 import turzx.widgets  # noqa: F401  (registers widgets)
+from turzx.widgets.weather import coordinates
 
 log = logging.getLogger("turzx")
 LAYOUTS = Path(__file__).resolve().parent.parent / "layouts"
@@ -61,13 +62,15 @@ def _contains(outer: tuple[int, int, int, int], inner: tuple[int, int, int, int]
 def _env_location() -> dict:
     """Location from $TURZX_LATITUDE / $TURZX_LONGITUDE, so it can stay out of the layouts
     (e.g. in a systemd drop-in). Empty unless both are set."""
-    lat, lon = os.environ.get("TURZX_LATITUDE"), os.environ.get("TURZX_LONGITUDE")
-    if not (lat and lon):
+    values = {name: os.environ[env] for name, env in
+              (("latitude", "TURZX_LATITUDE"), ("longitude", "TURZX_LONGITUDE")) if env in os.environ}
+    if not values:
         return {}
     try:
-        return {"latitude": float(lat), "longitude": float(lon)}
+        lat, lon = coordinates(values)
     except ValueError as exc:
-        raise SystemExit("TURZX_LATITUDE / TURZX_LONGITUDE must be numbers") from exc
+        raise SystemExit(f"TURZX_LATITUDE / TURZX_LONGITUDE: {exc}") from exc
+    return {"latitude": lat, "longitude": lon}
 
 
 def load_config(path: Path, sample: bool = False) -> tuple[dict, list[Slot], list[tuple[int, int, int, int]]]:
@@ -107,6 +110,13 @@ def load_config(path: Path, sample: bool = False) -> tuple[dict, list[Slot], lis
     for slot in slots:
         if slot.widget.kind == "agents":
             slot.widget.bind_history_sources(sources)
+        elif slot.widget.kind == "clock_weather" and slot.widget.options.get("align") == "time":
+            row = slot.box[1], slot.box[3]
+            partner = next((other for other in slots if other.widget.kind == "clock_weather"
+                            and other.widget.options.get("show") == "time"
+                            and (other.box[1], other.box[3]) == row), None)
+            if partner is not None:
+                slot.widget.align_with_time(partner.widget, partner.box[2], partner.box[3])
     return {**home, **cfg.get("display", {})}, slots, cards
 
 
@@ -157,8 +167,12 @@ def _run_update(widget: Widget, once: bool = False) -> None:
 def _location(display_cfg: dict, slots) -> tuple[float, float] | None:
     """(latitude, longitude) from [display], else from the first widget that has them."""
     for opts in [display_cfg] + [s.widget.options for s in slots]:
-        if "latitude" in opts and "longitude" in opts:
-            return float(opts["latitude"]), float(opts["longitude"])
+        try:
+            location = coordinates(opts)
+        except ValueError as exc:
+            raise SystemExit(f"invalid location: {exc}") from exc
+        if location is not None:
+            return location
     return None
 
 
