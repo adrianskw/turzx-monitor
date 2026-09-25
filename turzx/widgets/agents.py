@@ -12,6 +12,7 @@ from turzx.widget import Widget, register
 
 CLAUDE_SETTINGS = Path.home() / ".claude/settings.json"  # autoCompactWindow: Claude's usable context
 EFFORT = {"medium": "med"}  # short forms for the detail line; others fit as logged
+CONTEXT_BAR_W = 64  # `context_bar`: fill bar width on single rows
 
 
 @register("agents")
@@ -45,9 +46,9 @@ class Agents(Widget):
         self.active: list[Session] = []
         self.history_sources: dict[str, Widget] = {}
         self.preview_now: float | None = None
-        if options.get("status") == "dot":
-            # the working dot breathes: one smooth fade cycle every `pulse` seconds,
-            # redrawn every `pulse_step` seconds (a tiny region, so cheap to send)
+        if options.get("status") == "dot" or options.get("waiting", False):
+            # The working dot and waiting bell breathe every `pulse` seconds,
+            # redrawn every `pulse_step` seconds (a tiny region, so cheap to send).
             for name, attr, default in (("pulse", "pulse", 10), ("pulse_step", "frame_interval", 1)):
                 value = options.get(name, default)
                 try:
@@ -72,6 +73,7 @@ class Agents(Widget):
 
     # ---- drawing -----------------------------------------------------------
     DOT = "\uf444"
+    BELL = "\U000F009E"  # nf-md-bell_ring
     FIRE = "\U000F0238"
     SIGMA = "\U000F04A0"
 
@@ -85,7 +87,14 @@ class Agents(Widget):
         now = self._now()
         idle = now - s.mtime
         ramp = self.options.get("time_colors", False)
-        if idle >= self.working_seconds:
+        if self._waiting(s):  # stopped on a permission prompt or question: bell + wait time
+            timer = t.duration_text(idle).strip()
+            t.text_right(d, right, y, timer, f, t.MAGENTA)
+            _, y0, _, y1 = d.textbbox((0, y), "0", font=f)
+            box = t.px(t.size_of(f) * 0.8)  # sized by its ink: the glyph overhangs its advance
+            t.glyph_icon(d, right - d.textlength(timer, font=f) - 6 - box, (y0 + y1) / 2, self.BELL, box,
+                         t.blend(t.CARD, t.MAGENTA, self._pulse()))
+        elif idle >= self.working_seconds:
             color = self._time_color(idle) if ramp else t.MUTED
             t.text_right(d, right, y, t.duration_text(idle), f, color)
         elif self.options.get("status", "text") == "dot":
@@ -97,6 +106,28 @@ class Agents(Widget):
             d.text((cx - (x0 + x1) / 2, y), self.DOT, font=f, fill=color)
         else:
             t.text_right(d, right, y, "working", f, t.GREEN)
+
+    def _waiting(self, s: Session) -> bool:
+        """True when the session needs you (`waiting` option): its turn is open and stalled on a
+        tool call with no result. A question or plan approval counts at once; any other call
+        after `working_seconds` of silence (a permission prompt, or a long-running command,
+        which the logs can't tell apart). Pending subagents are work, not waiting."""
+        if not self.options.get("waiting", False) or not s.turn_open or not s.pending:
+            return False
+        names = set(s.pending.values())
+        if names & {"AskUserQuestion", "ExitPlanMode"}:
+            return True
+        if names <= {"Task", "Agent"}:
+            return False
+        return self._now() - s.mtime >= self.working_seconds
+
+    def _status_width(self, d, s: Session, f) -> float:
+        """Width to reserve for the timer, plus the bell when this session waits."""
+        base = d.textlength("59m" if self.options.get("status", "text") == "dot" else "working", font=f)
+        if not self._waiting(s):
+            return base
+        timer = t.duration_text(self._now() - s.mtime).strip()
+        return max(base, d.textlength(timer, font=f) + t.px(t.size_of(f) * 0.8) + 6)
 
     def draw(self, d, w, h):
         y = t.card(d, w, h)
@@ -127,11 +158,11 @@ class Agents(Widget):
             d.text((t.PAD, y + 50), "no active agents", font=f, fill=t.MUTED)
             return
         shown = self.active[:rows] if len(self.active) <= rows else self.active[:rows - 1]
-        dots = self.options.get("status", "text") == "dot"
-        state_w = d.textlength("59m" if dots else "working", font=f)
+        state_w = max((self._status_width(d, s, f) for s in shown),
+                      default=d.textlength("59m" if self.options.get("status", "text") == "dot" else "working", font=f))
         for i, s in enumerate(shown):
             ry = y + 48 + i * 32
-            t.icon(d, t.PAD, int(ry), s.tool, 24)
+            t.icon(d, t.PAD, t.px(ry), s.tool, 24)
             self._status(d, w - t.PAD, ry, s, f)
             tokens = t.human_count(s.today)
             tok_right = w - t.PAD - state_w - 12
@@ -169,11 +200,11 @@ class Agents(Widget):
             d.text((left, mid - 12), "no active agents", font=t.font(20), fill=t.MUTED)
             return
         shown = self.active[:rows] if len(self.active) <= rows else self.active[:rows - 1]
-        dots = self.options.get("status", "text") == "dot"
-        status_w = d.textlength("59m" if dots else "working", font=name_f)
+        status_w = max((self._status_width(d, s, name_f) for s in shown),
+                       default=d.textlength("59m" if self.options.get("status", "text") == "dot" else "working", font=name_f))
         for i, s in enumerate(shown):
             ry = y + i * row_h
-            t.icon(d, left, int(ry + 4), s.tool, 26)
+            t.icon(d, left, t.px(ry + 4), s.tool, 26)
             self._status(d, w - t.PAD, ry + 4, s, name_f)
             text_x = left + 34
             right = w - t.PAD - status_w - 10
@@ -207,14 +238,17 @@ class Agents(Widget):
         capacity = max(1, int((h - 52) // 22))
         shown = self.active[:capacity] if len(self.active) <= capacity else self.active[:capacity - 1]
         name_f, token_f, state_f = t.font(18, "bold"), t.font(16), t.font(15)
+        status_w = max((self._status_width(d, s, state_f) for s in shown), default=0)
+        # Existing spacing leaves 69 px beside a cache ring, or 117 px beside tokens.
+        status_extra = max(0, status_w - (69 if self.options.get("cache_ring", False) else 117))
         for i, session in enumerate(shown):
             y = 49 + i * 22
             t.icon(d, 15, y + 1, session.tool, 19)
-            name = t.fit_text(d, session.label, name_f, w - 255)
+            name = t.fit_text(d, session.label, name_f, w - 255 - status_extra)
             d.text((43, y), name, font=name_f, fill=t.TEXT)
-            t.text_right(d, w - 141, y, t.human_count(session.today), token_f, t.MUTED)
+            t.text_right(d, w - 141 - status_extra, y, t.human_count(session.today), token_f, t.MUTED)
             if self.options.get("cache_ring", False):
-                t.ring(d, w - 101, y + 10, 8, 3, session.cache_hit, t.cache_color(session.cache_hit))
+                t.ring(d, w - 101 - status_extra, y + 10, 8, 3, session.cache_hit, t.cache_color(session.cache_hit))
             self._status(d, w - t.PAD, y, session, state_f)
         if len(shown) < len(self.active):
             d.text((43, 49 + len(shown) * 22), f"+{len(self.active) - len(shown)} more",
@@ -269,6 +303,18 @@ class Agents(Widget):
             self._settings = (None, None)
         return self._settings[1]
 
+    def next_frame(self, now: float) -> float:
+        """Every `pulse_step` while a dot or bell is on screen; otherwise only when an idle
+        timer next ticks over ('1m' -> '2m', '1h' -> '2h'), and at least once a minute."""
+        wake = now + 60
+        for s in self.active:
+            idle = now - s.mtime
+            if self._waiting(s) or idle < self.working_seconds:
+                return super().next_frame(now)
+            unit = 86400 if idle >= 86400 else 3600 if idle >= 3600 else 60
+            wake = min(wake, s.mtime + (idle // unit + 1) * unit)
+        return wake
+
     def _pulse(self) -> float:
         phase = (self._now() % self.pulse) / self.pulse
         return 0.3 + 0.7 * (0.5 + 0.5 * math.cos(2 * math.pi * phase))  # 1 -> 0.3 -> 1
@@ -286,9 +332,11 @@ class Agents(Widget):
     def _draw_detailed(self, d, left, y, w, h):
         """Few sessions (<= `detail_rows`): two lines each. Name + status, then model, a
         context-fill bar and context tokens. Names stay neutral: the bar shows fill."""
-        slot = min((h - 2 * y) / len(self.active), 72)
+        slot = min((h - 2 * y) / len(self.active), 90)
         # names shrink with the slot (23 px at 64+, 22 px at 60) so four sessions still fit
-        name_size = min(23, round(slot * 0.36))
+        name_size = min(23, t.px(slot * 0.36))
+        content = name_size + 29  # name line to the bottom of the detail line
+        pad = max(2, (slot - content) / 2)  # centred in its slot: few sessions spread out
         name_f = t.font(name_size, self.name_weight)
         small = t.font(16)
         small_b = t.font(16, "bold")
@@ -297,11 +345,11 @@ class Agents(Widget):
         model_w = d.textlength("gpt-6.6-astra xhigh", font=small)  # longest expected model + effort
         num_w = d.textlength("99.9K", font=small_b)
         for i, s in enumerate(self.active):
-            ry = y + i * slot + 2
+            ry = y + i * slot + pad
             icon = min(22, name_size)
             t.icon(d, left, ry + name_size * 0.6 - icon / 2, s.tool, icon)
             self._status(d, status_right, ry, s, name_f)
-            name_right = status_right - d.textlength("59m", font=name_f) - 12
+            name_right = status_right - self._status_width(d, s, name_f) - 12
             d.text((text_x, ry), t.fit_text(d, s.label, name_f, name_right - text_x),
                    font=name_f, fill=t.TEXT)
             cy = ry + name_size + 21  # detail line centre
@@ -322,15 +370,15 @@ class Agents(Widget):
             window = self._window(s)
             pct = max(0.0, min(100.0, 100 * s.context / window)) if window else 0.0
             bar_left = count_right + 10
-            t.bar(d, bar_left, round(cy - 4), status_right - bar_left, 8, pct, t.ACCENT)
+            t.bar(d, bar_left, t.px(cy - 4), status_right - bar_left, 8, pct, t.ACCENT)
 
     def _draw_list_single(self, d, left, y, w, h):
         if 0 < len(self.active) <= self.detail_rows and (h - 2 * y) / len(self.active) >= 60:
             self._draw_detailed(d, left, y, w, h)
             return
         row_h = int(self.options.get("row_height", 28))
-        name_f = t.font(round(row_h * 0.64), self.name_weight)
-        tok_f = t.font(round(row_h * 0.57))
+        name_f = t.font(t.px(row_h * 0.64), self.name_weight)
+        tok_f = t.font(t.px(row_h * 0.57))
         rows = int((h - 2 * y + 6) // row_h)
         if not self.active:
             d.text((left, h / 2 - 12), "no active agents", font=t.font(20), fill=t.MUTED)
@@ -340,15 +388,21 @@ class Agents(Widget):
             shown = self.active
         else:
             shown = self.active[:min(cap, rows - 1)]
+        if self.options.get("spread", False):  # rows share out the card's height
+            row_h = max(row_h, (h - 2 * y + 6) / (len(shown) + (len(shown) < len(self.active))))
         status_right = w - t.PAD
-        age_w = d.textlength("59m", font=name_f)
-        tok_right = status_right - age_w - 12
+        status_w = max((self._status_width(d, s, name_f) for s in shown),
+                       default=d.textlength("59m" if self.options.get("status", "text") == "dot" else "working", font=name_f))
+        tok_right = status_right - status_w - 12
+        context = self.options.get("context_bar", False)  # context tokens + fill bar mid-row
+        ctx_w = d.textlength("999K", font=tok_f) + 8 + CONTEXT_BAR_W if context else 0
         tokens = self.options.get("tokens", True)  # false: no per-session token column
         rings = self.options.get("cache_ring", False)
         ring_x = tok_right - (d.textlength("99.9M", font=tok_f) + 18 if tokens else 0)
         name_right = (ring_x - 16 if rings else tok_right - (d.textlength("99.9M", font=tok_f) if tokens else 0)) - 10
+        ctx_right, name_right = name_right, name_right - (ctx_w + 12 if context else 0)
         for i, s in enumerate(shown):
-            ry = y + i * row_h
+            ry = y + i * row_h + (row_h - int(self.options.get("row_height", 28))) / 2
             t.icon(d, left, ry + 2, s.tool, 22)
             self._status(d, status_right, ry, s, name_f)
             if tokens:
@@ -356,13 +410,23 @@ class Agents(Widget):
             if rings:
                 t.ring(d, ring_x, ry + 12, 9, 3, s.cache_hit, t.cache_color(s.cache_hit))
             text_x = left + 30
+            if context:
+                _, y0, _, y1 = d.textbbox((0, ry), "0", font=name_f)
+                cy = (y0 + y1) / 2
+                window = self._window(s)
+                pct = max(0.0, min(100.0, 100 * s.context / window)) if window else 0.0
+                t.bar(d, ctx_right - CONTEXT_BAR_W, t.px(cy - 3), CONTEXT_BAR_W, 6, pct, t.ACCENT)
+                _, c0, _, c1 = d.textbbox((0, 0), "0", font=tok_f)
+                t.text_right(d, ctx_right - CONTEXT_BAR_W - 8, cy - (c0 + c1) / 2,
+                             t.human_count(s.context) if s.context else "—", tok_f, t.MUTED)
             name_color = self._context_color(s) if self.options.get("context_colors", False) else t.TEXT
-            d.text((text_x, ry), t.fit_text(d, s.label, name_f, name_right - text_x), font=name_f, fill=name_color)
+            room = name_right - text_x
+            d.text((text_x, ry), t.fit_text(d, s.label, name_f, room), font=name_f, fill=name_color)
         if len(shown) < len(self.active):
             more = f"+{len(self.active) - len(shown)} more"
             if self.options.get("total", False):
                 more += f" · {len(self.active)} agents"
-            ry = y + len(shown) * row_h
+            ry = y + len(shown) * row_h + (row_h - int(self.options.get("row_height", 28))) / 2
             d.text((left + 30, ry), more, font=name_f, fill=t.MUTED)
             if self.options.get("summary", False):
                 self._draw_summary(d, status_right, ry, name_f)

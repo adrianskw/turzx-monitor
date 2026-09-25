@@ -19,6 +19,63 @@ from turzx.widgets.gpu import Gpu
 
 
 class TokenLogTests(unittest.TestCase):
+    def test_codex_repeated_usage_reports_count_only_new_tokens(self):
+        now = datetime.now().astimezone().isoformat()
+
+        def record(inp, cached, output, last):
+            return json.dumps({
+                "timestamp": now, "type": "event_msg", "payload": {
+                    "type": "token_count", "info": {
+                        "last_token_usage": last,
+                        "total_token_usage": {"input_tokens": inp, "cached_input_tokens": cached,
+                                              "output_tokens": output},
+                    },
+                },
+            }) + "\n"
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "2026" / "09" / "24" / "rollout-test.jsonl"
+            path.parent.mkdir(parents=True)
+            first = record(1000, 500, 100, {"input_tokens": 1000, "cached_input_tokens": 500,
+                                            "output_tokens": 100})
+            second = record(1200, 550, 150, {"input_tokens": 200, "cached_input_tokens": 50,
+                                              "output_tokens": 50})
+            reset = record(100, 20, 10, {"input_tokens": 100, "cached_input_tokens": 20,
+                                         "output_tokens": 10})
+            path.write_text(first + first)
+            with patch("turzx.agentlog.CLAUDE_DIR", root / "missing"), patch(
+                "turzx.agentlog.CODEX_DIR", root
+            ), patch("turzx.agentlog.CODEX_INDEX", root / "missing-index"):
+                log = TokenLog()
+                log.refresh(max_age=0)
+                self.assertEqual(log.total_today(), 600)
+                with path.open("a") as file:
+                    file.write(second + second)
+                log.refresh(max_age=0)
+                self.assertEqual(log.total_today(), 800)
+                self.assertEqual(log.rate(5), 160)
+                session = log.sessions[path]
+                self.assertEqual((session.cache_read, session.input_total), (550, 1200))
+                with path.open("a") as file:
+                    file.write(reset)
+                log.refresh(max_age=0)
+                self.assertEqual(log.total_today(), 890)
+
+    def test_malformed_cwd_does_not_poison_session_label(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "2026" / "09" / "24" / "rollout-test.jsonl"
+            path.parent.mkdir(parents=True)
+            path.write_text("\n".join(json.dumps({"type": "session_meta", "payload": {"cwd": cwd}})
+                                      for cwd in (123, "/sample/valid")) + "\n")
+            with patch("turzx.agentlog.CLAUDE_DIR", root / "missing"), patch(
+                "turzx.agentlog.CODEX_DIR", root
+            ), patch("turzx.agentlog.CODEX_INDEX", root / "missing-index"):
+                log = TokenLog()
+                log.refresh(max_age=0)
+                self.assertEqual(log.sessions[path].label, "valid")
+
     def test_bad_lines_do_not_hide_later_usage_or_partial_next_line(self):
         now = datetime.now().astimezone().isoformat()
 

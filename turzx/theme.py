@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import subprocess
 import tomllib
 from contextlib import contextmanager
 from functools import lru_cache
@@ -76,16 +77,103 @@ def load(name: str, lift: float | None = None) -> None:
     globals().update(palette)
 
 
+def px(v: float) -> int:
+    """Nearest pixel, halves up: the one rounding rule for shape coordinates. Left to
+    themselves, Pillow truncates rectangles, lines and ellipses, rounds rounded rectangles
+    half-to-even (as round() does), so one fractional edge could land on different pixels.
+    Text is the exception: Pillow hands its fractional origin to FreeType, which places and
+    grid-fits each glyph itself, so snapping it first would round twice."""
+    return math.floor(v + 0.5)
+
+
+def _snap(xy):
+    """px() every coordinate of a Pillow xy: (x0, y0, x1, y1), [x, y, ...] or [(x, y), ...]."""
+    if xy and isinstance(xy[0], (tuple, list)):
+        return [tuple(px(v) for v in point) for point in xy]
+    return [px(v) for v in xy]
+
+
+class Draw(ImageDraw.ImageDraw):
+    """ImageDraw whose shapes snap coordinates with px(), so widgets can place them at
+    fractional positions (centres, column pitches) and every shape agrees on the pixel.
+    Text keeps its fractional origin (see px); measuring is untouched."""
+
+    def rectangle(self, xy, *args, **kwargs):
+        return super().rectangle(_snap(xy), *args, **kwargs)
+
+    def rounded_rectangle(self, xy, *args, **kwargs):
+        return super().rounded_rectangle(_snap(xy), *args, **kwargs)
+
+    def line(self, xy, *args, **kwargs):
+        return super().line(_snap(xy), *args, **kwargs)
+
+    def ellipse(self, xy, *args, **kwargs):
+        return super().ellipse(_snap(xy), *args, **kwargs)
+
+    def polygon(self, xy, *args, **kwargs):
+        return super().polygon(_snap(xy), *args, **kwargs)
+
+
 FONT_DIR = "/usr/share/fonts/TTF"
 FONTS = {
     "regular": f"{FONT_DIR}/JetBrainsMonoNerdFont-Regular.ttf",
     "bold": f"{FONT_DIR}/JetBrainsMonoNerdFont-Bold.ttf",
 }
+DEFAULT_FONTS = dict(FONTS)
+
+
+# Layout sizes are tuned to JetBrains Mono, whose characters are 0.6 em wide. Another font
+# is scaled so its characters are that wide too: every fixed-width fit (digit budgets,
+# right-aligned columns, reserved widths) then holds unchanged.
+REFERENCE_ADVANCE = 0.6
+font_scale = 1.0
+
+
+def _fc_file(family: str, style: str) -> str:
+    """Font file for a family and style via fontconfig; error if it would fall back to another."""
+    out = subprocess.run(["fc-match", "-f", "%{family}\\t%{file}", f"{family}:style={style}"],
+                         capture_output=True, text=True, timeout=10).stdout
+    families, _, path = out.partition("\t")
+    if family.lower() not in (f.strip().lower() for f in families.split(",")) or not path:
+        raise ValueError(f"font {family!r} ({style}) is not installed")
+    return path
+
+
+def use_font(family: str | None = None, scale: float | str = "match") -> None:
+    """Draw with a monospaced font family found by fontconfig (e.g. "UbuntuMono Nerd Font";
+    a Nerd Font, so the icons are there). scale="match" sizes it to JetBrains Mono's
+    character width; a number scales it by that. None keeps JetBrains Mono."""
+    global font_scale
+    if family:
+        paths = {"regular": _fc_file(family, "Regular"), "bold": _fc_file(family, "Bold")}
+    else:
+        paths = dict(DEFAULT_FONTS)
+    if scale == "match":
+        probe = ImageFont.truetype(paths["regular"], 1000)
+        value = REFERENCE_ADVANCE * 1000 / probe.getlength("0")
+    else:
+        try:
+            value = float(scale)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('font_scale must be "match" or a positive number') from exc
+        if isinstance(scale, bool) or not math.isfinite(value) or value <= 0:
+            raise ValueError('font_scale must be "match" or a positive number')
+    FONTS.update(paths)
+    font_scale = value
+    font.cache_clear()
 
 
 @lru_cache(maxsize=None)
 def font(size: int, weight: str = "regular") -> ImageFont.FreeTypeFont:
-    return ImageFont.truetype(FONTS[weight], size)
+    """The UI font at a layout size (scaled by font_scale to render)."""
+    f = ImageFont.truetype(FONTS[weight], max(1, px(size * font_scale)))
+    f.layout_size = size
+    return f
+
+
+def size_of(f) -> float:
+    """A font's layout size: what to derive related sizes from (f.size is the rendered size)."""
+    return getattr(f, "layout_size", f.size)
 
 
 ASSETS = Path(__file__).parent / "assets"
@@ -99,7 +187,7 @@ def _icon(name: str, size: int) -> Image.Image:
 def icon(d: ImageDraw.ImageDraw, x: int, y: int, name: str, size: int) -> None:
     """Paste turzx/assets/<name>.png onto the widget image, alpha-blended."""
     img = _icon(name, size)
-    d._image.paste(img, (round(x), round(y)), img)  # ImageDraw keeps a reference to its target image
+    d._image.paste(img, (px(x), px(y)), img)  # ImageDraw keeps a reference to its target image
 
 
 def level_color(pct: float) -> tuple[int, int, int]:
@@ -147,17 +235,24 @@ def card(d: ImageDraw.ImageDraw, w: int, h: int, title: str | None = None) -> in
     return 10
 
 
+def _box(x: float, y: float, w: float, h: float) -> tuple[int, int, int, int]:
+    """Snap a box by its edges: (x, y, w, h) in whole pixels, each edge px()-rounded."""
+    x0, y0 = px(x), px(y)
+    return x0, y0, px(x + w) - x0, px(y + h) - y0
+
+
 def bar(d: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, pct: float, color=None,
         step: float = 1.0) -> None:
-    """Bar whose fill is exact to the pixel, quantized to `step` percent."""
-    x, y, w, h = round(x), round(y), round(w), round(h)
+    """Bar whose fill is exact to the pixel, quantized to `step` percent. Its edges are
+    snapped (not x and w apart), so a bar ends on the pixel its right edge rounds to."""
+    x, y, w, h = _box(x, y, w, h)
     if w <= 0 or h <= 0:
         return
     pct = max(0.0, min(100.0, round(pct / step) * step))
     r = min(BAR_RADIUS, h // 2)
     # PIL rectangles include their end pixel, so (x, x + w - 1) is exactly w pixels wide
     d.rounded_rectangle((x, y, x + w - 1, y + h - 1), radius=r, fill=TRACK)
-    fill_w = round(w * pct / 100)
+    fill_w = px(w * pct / 100)
     if fill_w <= 0:
         return
     # Clip the fill to the bar outline so small values keep their true width
@@ -170,13 +265,13 @@ def bar(d: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, pct: float, colo
 
 def vbar(d: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, pct: float, color, step: float = 1.0) -> None:
     """Vertical bar filling bottom-up, exact to the pixel, quantized to `step` percent."""
-    x, y, w, h = round(x), round(y), round(w), round(h)
+    x, y, w, h = _box(x, y, w, h)
     if w <= 0 or h <= 0:
         return
     pct = max(0.0, min(100.0, round(pct / step) * step))
     r = min(BAR_RADIUS, w // 2)
     d.rounded_rectangle((x, y, x + w - 1, y + h - 1), radius=r, fill=TRACK)
-    fill_h = round(h * pct / 100)
+    fill_h = px(h * pct / 100)
     if fill_h <= 0:
         return
     mask = Image.new("L", (w, h), 0)
@@ -197,7 +292,7 @@ def sparkline(d: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, values, vm
     values = list(values)
     if len(values) < 2:
         return
-    x, y, w, h = round(x), round(y), round(w), round(h)
+    x, y, w, h = _box(x, y, w, h)
     vmax = max(vmax, max(values), 1e-9)
     line = blend(CARD, color, 0.5 if dim else 1.0)
     fill = blend(CARD, color, 0.15 if dim else 0.33)
@@ -221,16 +316,16 @@ def ring(d: ImageDraw.ImageDraw, cx: float, cy: float, r: float, width: float, p
     """Annulus gauge filled clockwise from 12 o'clock (anti-aliased by supersampling).
     pct=None draws only the track (no data)."""
     SS = 4
-    box = (round(cx - r - 1), round(cy - r - 1), round(cx + r + 1), round(cy + r + 1))
+    box = (px(cx - r - 1), px(cy - r - 1), px(cx + r + 1), px(cy + r + 1))
     target = d._image
     size = (box[2] - box[0], box[3] - box[1])
     layer = target.crop(box).resize((size[0] * SS, size[1] * SS), Image.NEAREST)
     ld = ImageDraw.Draw(layer)
     o = SS  # 1 px margin in layer coordinates
     bounds = (o, o, layer.width - o - 1, layer.height - o - 1)
-    ld.arc(bounds, 0, 360, fill=track or TRACK, width=round(width * SS))
+    ld.arc(bounds, 0, 360, fill=track or TRACK, width=px(width * SS))
     if pct:
-        ld.arc(bounds, -90, -90 + 360 * max(0.0, min(100.0, pct)) / 100, fill=color, width=round(width * SS))
+        ld.arc(bounds, -90, -90 + 360 * max(0.0, min(100.0, pct)) / 100, fill=color, width=px(width * SS))
     target.paste(layer.resize(size, Image.BOX), box[:2])
 
 
@@ -353,7 +448,7 @@ def glyph_icon(d: ImageDraw.ImageDraw, x: float, cy: float, glyph: str, box: int
     """Draw an icon glyph scaled so its ink's longest side is `box` px, whatever icon set it
     comes from, with the ink vertically centred on cy and starting at x (or centred on x)."""
     x0, y0, x1, y1 = d.textbbox((0, 0), glyph, font=font(100))
-    f = font(max(6, round(100 * box / max(x1 - x0, y1 - y0, 1))))
+    f = font(max(6, px(100 * box / max(x1 - x0, y1 - y0, 1))))
     x0, y0, x1, y1 = d.textbbox((0, 0), glyph, font=f)
     left = x - (x0 + x1) / 2 if centre_x else x - x0
     d.text((left, cy - (y0 + y1) / 2), glyph, font=f, fill=fill or MUTED)
@@ -375,8 +470,8 @@ def graph_with_bar(d: ImageDraw.ImageDraw, w: int, h: int, size: int, history, c
     _, _, _, digits = ImageDraw.Draw(Image.new("L", (1, 1))).textbbox((0, y), "0", font=f)
     readings = d.textlength(gap.join(text for text, _ in fields), font=f)
     left = PAD + ICON_BOX + 10
-    bar(d, left, round(headline_centre(y, size) - 7), w - PAD - readings - 14 - left, 14, pct, bar_color)
-    top, bottom = round(digits) + 4, h - 10
+    bar(d, left, px(headline_centre(y, size) - 7), w - PAD - readings - 14 - left, 14, pct, bar_color)
+    top, bottom = px(digits) + 4, h - 10
     sparkline(d, PAD, top, w - 2 * PAD, bottom - top, history, color=color, dim=True)
 
 
@@ -404,10 +499,10 @@ def time_right(d: ImageDraw.ImageDraw, right: float, y: float, text: str, fnt, f
     rest_w = d.textlength(rest, font=fnt)
     d.text((right - rest_w, y), rest, font=fnt, fill=fill)
     adv = fnt.getlength("1")
-    glyph = Image.new("RGBA", (round(adv), round(fnt.size * 1.3)), (0, 0, 0, 0))
+    glyph = Image.new("RGBA", (math.ceil(adv), math.ceil(fnt.size * 1.3)), (0, 0, 0, 0))
     ImageDraw.Draw(glyph).text((0, 0), "1", font=fnt, fill=fill)
-    glyph = glyph.resize((round(adv * ONE_SQUEEZE), glyph.height), Image.LANCZOS)
-    d._image.paste(glyph, (round(right - rest_w - glyph.width - 2), round(y)), glyph)
+    glyph = glyph.resize((px(glyph.width * ONE_SQUEEZE), glyph.height), Image.LANCZOS)
+    d._image.paste(glyph, (px(right - rest_w - glyph.width - 2), px(y)), glyph)
 
 
 def time_width(d: ImageDraw.ImageDraw, fnt) -> float:

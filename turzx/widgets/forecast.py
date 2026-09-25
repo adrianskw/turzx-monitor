@@ -75,7 +75,7 @@ class Forecast(Widget):
             return t.font(15, "bold"), t.font(18, "bold"), t.font(19)
         size = row_h * 0.78
         while True:
-            lf, tf, gf = t.font(round(size * 0.78), "bold"), t.font(round(size), "bold"), t.font(round(size * 1.05))
+            lf, tf, gf = t.font(t.px(size * 0.78), "bold"), t.font(t.px(size), "bold"), t.font(t.px(size * 1.05))
             need = (d.textlength("12am", font=lf) + 8 + d.textlength("\U000F0F31", font=gf) + 12
                     + d.textlength(f"99{deg}" if deg else "107", font=tf))
             if need <= col_w or size <= 12:
@@ -90,7 +90,7 @@ class Forecast(Widget):
         x0, y0, x1, y1 = d.textbbox((0, 0), temp, font=tf)
         tx, ty = w - t.PAD - d.textlength(temp, font=tf), y - y0 + 2
         icon = glyph(snap.code, snap.is_day)
-        gf = t.font(round(tf.size * 4 / 3))
+        gf = t.font(t.px(t.size_of(tf) * 4 / 3))
         ix0, iy0, ix1, iy1 = d.textbbox((0, 0), icon, font=gf)
         cx, cy = tx + (x0 + x1) / 2, ty + (y0 + y1) / 2
         d.text((cx - (ix0 + ix1) / 2, cy - (iy0 + iy1) / 2), icon, font=gf, fill=t.blend(t.CARD, t.ORANGE, 0.25))

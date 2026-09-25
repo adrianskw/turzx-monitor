@@ -85,7 +85,7 @@ def load_config(path: Path, sample: bool = False) -> tuple[dict, list[Slot], lis
     for i, spec in enumerate(cfg.get("widget", []), 1):
         spec = dict(spec)
         kind = spec.pop("type", None)
-        if kind in ("weather", "clock_weather", "forecast") and spec.get("show") != "time":
+        if kind in ("weather", "clock_weather", "forecast"):  # time-only cards use it for sun times
             spec = {**home, **spec}
         label = f"widget[{i}] ({kind or 'missing type'})"
         box = _box(spec.pop("box", None), label)
@@ -123,7 +123,7 @@ def load_config(path: Path, sample: bool = False) -> tuple[dict, list[Slot], lis
 def background(size: tuple[int, int], cards: list[tuple]) -> Image.Image:
     """Screen background: gap color plus the shared cards that frameless widgets sit in."""
     img = Image.new("RGB", size, theme.BG)
-    d = ImageDraw.Draw(img)
+    d = theme.Draw(img)
     for box in cards:
         theme.card_rect(d, *box)
     return img
@@ -135,7 +135,7 @@ def render(slot: Slot, bg: Image.Image | None = None) -> Image.Image:
         img = Image.new("RGB", (w, h), theme.BG)
     else:  # start from the shared card underneath
         img = bg.crop((x, y, x + w, y + h)) if bg else Image.new("RGB", (w, h), theme.CARD)
-    d = ImageDraw.Draw(img)
+    d = theme.Draw(img)
     if not slot.frame:
         with theme.frameless():
             _draw(slot, d, w, h)
@@ -309,10 +309,11 @@ class App:
                     log.error("%s.next_delay() returned %r; using interval %s", s.widget.kind, iv, s.widget.interval)
                     iv = s.widget.interval
                 s.next_due = math.floor(now / iv + 1) * iv
+                s.next_frame = 0.0  # new data may need a faster animation cadence
             fi = s.widget.frame_interval
             if fi and s.ready and now >= s.next_frame:  # animation: redraw, don't re-fetch
                 s.dirty = True
-                s.next_frame = math.floor(now / fi + 1) * fi
+                s.next_frame = s.widget.next_frame(now)
 
     def flush(self) -> None:
         for s in self.slots:
@@ -423,6 +424,7 @@ def main() -> None:
     log.info("layout %s", path)
     display_cfg, slots, cards = load_config(path, sample=args.sample_data)
     theme.load(display_cfg.get("theme", "current"), display_cfg.get("muted_lift", 0.0))
+    theme.use_font(display_cfg.get("font"), display_cfg.get("font_scale", "match"))
     app = App(display_cfg, slots, args.preview, cards)
 
     def stop(*_):  # finish the in-flight update instead of dying mid-transfer

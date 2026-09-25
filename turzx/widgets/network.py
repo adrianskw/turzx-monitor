@@ -30,16 +30,22 @@ class Network(Widget):
     def _counters(self):
         per = psutil.net_io_counters(pernic=True)
         names = [self.iface] if self.iface else [n for n in per if n != "lo" and not n.startswith(("docker", "veth", "br-"))]
-        return sum(per[n].bytes_recv for n in names if n in per), sum(per[n].bytes_sent for n in names if n in per)
+        return {name: (per[name].bytes_recv, per[name].bytes_sent) for name in names if name in per}
 
     def update(self):
-        now, (rx, tx) = time.monotonic(), self._counters()
-        if self._last:
-            t0, rx0, tx0 = self._last
+        now, counters = time.monotonic(), self._counters()
+        if self._last is not None:
+            t0, previous = self._last
             dt = max(now - t0, 1e-3)
-            self.down.append((rx - rx0) / dt)
-            self.up.append((tx - tx0) / dt)
-        self._last = (now, rx, tx)
+            down = up = 0
+            for name, (rx, tx) in counters.items():
+                if name in previous:
+                    rx0, tx0 = previous[name]
+                    down += max(0, rx - rx0)
+                    up += max(0, tx - tx0)
+            self.down.append(down / dt)
+            self.up.append(up / dt)
+        self._last = (now, counters)
 
     def rate(self, samples) -> str:
         return t.human_bytes(sum(samples) / len(samples), "/s", min_unit="K")

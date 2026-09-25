@@ -25,6 +25,7 @@ from turzx.widgets.agents import Agents
 from turzx.widgets.ai_usage import AiUsage, reset_text
 from turzx.widgets.forecast import Forecast
 from turzx.widgets.gpu import Gpu
+from turzx.widgets.network import Network
 from turzx.widgets.weather import Weather, _CACHE, _CACHE_LOCK, _FETCH_LOCKS
 
 
@@ -48,6 +49,25 @@ class DriverTests(unittest.TestCase):
 
 
 class SensorTests(unittest.TestCase):
+    def test_network_interface_changes_and_counter_reset_do_not_create_spikes(self):
+        def counters(**devices):
+            return {name: SimpleNamespace(bytes_recv=rx, bytes_sent=tx)
+                    for name, (rx, tx) in devices.items()}
+
+        samples = [counters(eth0=(1000, 100)),
+                   counters(eth0=(1010, 105), wlan0=(1_000_000, 100_000)),
+                   counters(eth0=(1020, 110)),
+                   counters(eth0=(2, 1)),
+                   counters(eth0=(7, 4), wlan0=(1_100_000, 120_000))]
+        widget = Network(smooth=1)
+        with patch("turzx.widgets.network.psutil.net_io_counters", side_effect=samples), patch(
+            "turzx.widgets.network.time.monotonic", side_effect=[1, 2, 3, 4, 5]
+        ):
+            widget.update()
+            for expected in ((10, 5), (10, 5), (0, 0), (5, 3)):
+                widget.update()
+                self.assertEqual((widget.down[-1], widget.up[-1]), expected)
+
     def test_gpu_hidden_power_is_not_polled_and_optional_failure_keeps_data(self):
         with patch("turzx.widgets.gpu.pynvml") as nvml:
             nvml.NVMLError = RuntimeError

@@ -29,6 +29,9 @@ from pathlib import Path
 CLAUDE_DIR = Path.home() / ".claude/projects"
 CODEX_DIR = Path.home() / ".codex/sessions"
 CODEX_INDEX = Path.home() / ".codex/session_index.jsonl"  # {"id", "thread_name"} per named thread
+CLAUDE_REGISTRY = Path.home() / ".claude/sessions"  # <pid>.json per running Claude Code: pid, sessionId
+PROC = Path("/proc")
+LIVE_GRACE = 60.0  # seconds a session with no live process stays listed (a run just ending)
 MAX_RATE_MINUTES = 24 * 60
 EVENT_SECONDS = MAX_RATE_MINUTES * 60
 FINGERPRINT_BYTES = 256
@@ -46,7 +49,9 @@ class Session:
         self.head = b""  # first committed bytes, to detect same-inode rewrites
         self.tail = b""  # last committed bytes, to detect a rewritten log of equal size
         self.cwd = ""
-        self.mtime = 0.0
+        self.mtime = 0.0  # last activity: the newest prompt, reply or tool record (else file mtime)
+        self.file_mtime = 0.0  # last write of any kind, housekeeping included
+        self.activity = 0.0
         self.today = 0  # fresh tokens since local midnight
         self.cache_read = 0  # input tokens served from cache, today
         self.input_total = 0  # all input tokens (fresh + cache writes + cache reads), today
@@ -56,6 +61,11 @@ class Session:
         self.model = ""  # latest model id, e.g. "claude-opus-5-5" / "gpt-6-sol"
         self.effort = ""  # latest reasoning effort: low / medium / high / xhigh / max
         self.title = ""  # name given with /rename (Claude custom-title, Codex thread name)
+        self.turn_open = False  # a turn has started and not yet ended (or been interrupted)
+        self.pending: dict[str, str] = {}  # tool calls with no result yet: call id -> tool name
+        self.codex_totals: tuple[int, int, int] | None = None  # cumulative input, cached input, output
+        self.cleared_at: float | None = None  # Claude: when /clear started this log (replacing another)
+        self.subagent = False  # Codex: a thread spawned by another (e.g. a guardian review)
 
     @property
     def label(self) -> str:
@@ -86,6 +96,26 @@ def _tokens(tool: str, entry: dict) -> tuple[int, int, int]:
     u = payload["info"].get("last_token_usage") or {}
     inp, cached = u.get("input_tokens", 0), u.get("cached_input_tokens", 0)  # Codex input includes cached
     return max(0, inp - cached) + u.get("output_tokens", 0), cached, inp
+
+
+def _codex_delta(s: Session, entry: dict, fallback: tuple[int, int, int]) -> tuple[int, int, int]:
+    """Count the change in Codex's cumulative usage, ignoring repeated reports."""
+    payload = entry.get("payload") or {}
+    info = payload.get("info") if payload.get("type") == "token_count" else None
+    total = info.get("total_token_usage") if isinstance(info, dict) else None
+    if not isinstance(total, dict):
+        return fallback
+    values = tuple(total.get(key) for key in ("input_tokens", "cached_input_tokens", "output_tokens"))
+    if any(type(value) is not int or value < 0 for value in values) or values[1] > values[0]:
+        return fallback
+    previous = s.codex_totals
+    s.codex_totals = values
+    if previous is None or any(value < old for value, old in zip(values, previous)):
+        # The first visible report may follow a truncated log; use its per-update
+        # usage instead of attributing the entire historical total to this event.
+        return fallback
+    inp, read, output = (value - old for value, old in zip(values, previous))
+    return inp - read + output, read, inp
 
 
 def _context(tool: str, entry: dict) -> tuple[int, int | None]:
@@ -123,6 +153,52 @@ def _effort(tool: str, entry: dict) -> str:
     return str(entry.get("effort") or "") if entry.get("type") == "assistant" else ""
 
 
+INTERRUPTED = "[Request interrupted by user"
+CLEAR = "<command-name>/clear</command-name>"
+CODEX_HOUSEKEEPING = {"thread_settings_applied"}
+CLEAR_SLACK = 10.0  # seconds between /clear and the replaced log's last write
+
+
+def _turn_update(s: "Session", tool: str, entry: dict, prompt: bool) -> None:
+    """Track whether a turn is open and which tool calls await results, so a session stopped
+    at a permission prompt or a question can be told apart from one that finished."""
+    kind = entry.get("type")
+    if tool == "codex":
+        payload = entry.get("payload") or {}
+        ptype = payload.get("type")
+        if prompt:
+            s.turn_open, s.pending = True, {}
+        elif kind == "event_msg" and ptype in ("task_complete", "turn_aborted"):
+            s.turn_open, s.pending = False, {}
+        elif kind == "response_item" and ptype in ("function_call", "custom_tool_call"):
+            s.pending[str(payload.get("call_id"))] = str(payload.get("name") or "")
+        elif kind == "response_item" and ptype in ("function_call_output", "custom_tool_call_output"):
+            s.pending.pop(str(payload.get("call_id")), None)
+        return
+    if entry.get("isSidechain"):
+        return  # subagent traffic; the main thread's Task call stays pending meanwhile
+    msg = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+    content = msg.get("content")
+    blocks = [c for c in content if isinstance(c, dict)] if isinstance(content, list) else []
+    text = content if isinstance(content, str) else " ".join(str(c.get("text", "")) for c in blocks)
+    if kind == "user" and text.startswith(INTERRUPTED):
+        s.turn_open, s.pending = False, {}
+    elif prompt:
+        s.turn_open, s.pending = True, {}
+    elif kind == "assistant":
+        for c in blocks:
+            if c.get("type") == "tool_use":
+                s.pending[str(c.get("id"))] = str(c.get("name") or "")
+        if msg.get("stop_reason") == "end_turn":
+            s.turn_open, s.pending = False, {}
+    elif kind == "user":
+        for c in blocks:
+            if c.get("type") == "tool_result":
+                s.pending.pop(str(c.get("tool_use_id")), None)
+    elif kind == "system" and entry.get("subtype") == "turn_duration":
+        s.turn_open, s.pending = False, {}
+
+
 def _is_prompt(tool: str, entry: dict) -> bool:
     """True for the entry that starts a turn: a typed prompt (Claude) or task_started (Codex)."""
     if tool == "codex":
@@ -133,6 +209,66 @@ def _is_prompt(tool: str, entry: dict) -> bool:
     if isinstance(content, str):
         return True
     return isinstance(content, list) and any(isinstance(c, dict) and c.get("type") == "text" for c in content)
+
+
+def _housekeeping(tool: str, entry: dict) -> bool:
+    """Records written without any work happening: e.g. opening a Codex thread in the app
+    re-applies its settings. (Claude's title, mode and cost records carry no timestamp.)"""
+    if tool == "codex":
+        payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+        return entry.get("type") == "session_meta" or payload.get("type") in CODEX_HOUSEKEEPING
+    return False
+
+
+def _is_clear(entry: dict) -> bool:
+    """A Claude `/clear`: logged as the first command of the new session's log."""
+    content = (entry.get("message") or {}).get("content") if entry.get("type") == "user" else None
+    return isinstance(content, str) and CLEAR in content
+
+
+def _proc_start(pid: int) -> str | None:
+    """A process's start time (clock ticks since boot), or None when it isn't running."""
+    try:
+        stat = (PROC / str(pid) / "stat").read_text()
+        return stat[stat.rindex(")") + 2:].split()[19]
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _live_claude() -> set[str] | None:
+    """Session ids of running Claude Code processes (their registry, checked against /proc so a
+    crashed process or a reused pid doesn't count), or None when there's no registry to go by."""
+    if not CLAUDE_REGISTRY.is_dir() or not PROC.is_dir():
+        return None
+    ids = set()
+    for path in CLAUDE_REGISTRY.glob("*.json"):
+        try:
+            info = json.loads(path.read_text())
+            start = _proc_start(int(info["pid"]))
+            if start is not None and str(info.get("procStart", start)) == start:
+                ids.add(str(info["sessionId"]))
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            continue
+    return ids
+
+
+def _open_codex() -> set[str] | None:
+    """Rollout logs held open by a running Codex (CLI or the ChatGPT app keeps each live
+    thread's log open), or None without /proc."""
+    if not PROC.is_dir():
+        return None
+    paths = set()
+    for proc in PROC.iterdir():
+        try:
+            if not proc.name.isdigit() or not (proc / "comm").read_text().startswith("codex"):
+                continue
+            for fd in (proc / "fd").iterdir():
+                target = os.readlink(fd)
+                if target.endswith(".jsonl") and "/rollout-" in target:
+                    paths.add(target)
+        except OSError:
+            continue
+    return paths
 
 
 class TokenLog:
@@ -177,6 +313,11 @@ class TokenLog:
                     s.cwd = ""
                     s.turn_start = 0.0
                     s.model = s.effort = s.title = ""
+                    s.turn_open, s.pending = False, {}
+                    s.codex_totals = None
+                    s.cleared_at = None
+                    s.subagent = False
+                    s.activity = 0.0
                 f.seek(s.offset)
                 chunk = f.read()
                 end = chunk.rfind(b"\n")
@@ -192,7 +333,8 @@ class TokenLog:
         s.size = stat.st_size
         s.mtime_ns = stat.st_mtime_ns
         s.ctime_ns = stat.st_ctime_ns
-        s.mtime = stat.st_mtime
+        s.file_mtime = stat.st_mtime
+        s.mtime = s.activity or s.file_mtime
         if end < 0:
             return True
         s.offset += end + 1
@@ -204,16 +346,23 @@ class TokenLog:
                 if not isinstance(entry, dict):
                     continue
                 cwd = entry.get("cwd") or (entry.get("payload") or {}).get("cwd") or ""
+                if not isinstance(cwd, str):
+                    cwd = ""
                 ctx, window = _context(s.tool, entry)
                 fresh, read, inp = _tokens(s.tool, entry)
-                ts = _ts(entry["timestamp"]) if (fresh or inp) and "timestamp" in entry else None
+                has_usage = bool(fresh or inp)
+                ts = _ts(entry["timestamp"]) if has_usage and "timestamp" in entry else None
                 prompt = _ts(entry["timestamp"]) if "timestamp" in entry and _is_prompt(s.tool, entry) else None
                 model = _model(s.tool, entry)
                 effort = _effort(s.tool, entry)
                 title = entry.get("customTitle") if entry.get("type") == "custom-title" else None
+                cleared = _ts(entry["timestamp"]) if s.tool == "claude" and _is_clear(entry) else None
+                active = _ts(entry["timestamp"]) if "timestamp" in entry and not _housekeeping(s.tool, entry) else None
             except (ValueError, TypeError, AttributeError, KeyError, OverflowError, UnicodeError):
                 # A damaged record must not hide valid records later in the file.
                 continue
+            if s.tool == "codex" and ts is not None:
+                fresh, read, inp = _codex_delta(s, entry, (fresh, read, inp))
             if not s.cwd:
                 s.cwd = cwd
             if ctx:
@@ -222,19 +371,32 @@ class TokenLog:
                 s.window = window
             if prompt is not None:
                 s.turn_start = prompt
+            try:
+                _turn_update(s, s.tool, entry, prompt is not None)
+            except (TypeError, AttributeError, ValueError):
+                pass  # a malformed record only loses its turn-state hint
             if model:
                 s.model = model
             if effort:
                 s.effort = effort
+            if s.tool == "codex" and entry.get("type") == "session_meta":
+                meta = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+                source = meta.get("source")
+                s.subagent = bool(meta.get("parent_thread_id")) or (isinstance(source, dict) and "subagent" in source)
+            if cleared is not None:
+                s.cleared_at = cleared
+            if active is not None:
+                s.activity = max(s.activity, active)
             if isinstance(title, str):
                 s.title = title.strip()  # latest rename wins; an empty one clears it
-            if ts is not None:
+            if ts is not None and (fresh or read or inp):
                 if ts >= midnight:
                     s.today += fresh
                     s.cache_read += read
                     s.input_total += inp
                 if ts >= event_cutoff:
                     self.events.append((ts, fresh, read, inp, s.path))
+        s.mtime = s.activity or s.file_mtime
         return True
 
     def refresh(self, max_age: float = 2.0) -> None:
@@ -299,9 +461,23 @@ class TokenLog:
             return sum(s.today for s in self.sessions.values())
 
     def active(self, minutes: float) -> list[Session]:
+        """Open sessions written to in the last `minutes`, newest first. Left out: sessions
+        whose process has exited, Codex subagent threads, and a Claude log that a /clear
+        replaced (its last write is the /clear itself, in the same project folder)."""
         cutoff = time.time() - minutes * 60
         with self._lock:
-            return sorted((s for s in self.sessions.values() if s.mtime >= cutoff), key=lambda s: -s.mtime)
+            live = [s for s in self.sessions.values() if s.mtime >= cutoff and not s.subagent]
+        # Sessions whose process has exited drop out (after a short grace), not after `minutes`.
+        claude, codex, now = _live_claude(), _open_codex(), time.time()
+        live = [s for s in live if now - s.mtime < LIVE_GRACE or (
+            (claude is None or s.path.stem in claude) if s.tool == "claude" else
+            (codex is None or str(s.path) in codex))]
+        with self._lock:
+            clears = [c for c in live if c.cleared_at is not None]
+            live = [s for s in live if not (s.tool == "claude" and any(
+                c is not s and c.path.parent == s.path.parent and abs(s.file_mtime - c.cleared_at) <= CLEAR_SLACK
+                for c in clears))]
+            return sorted(live, key=lambda s: -s.mtime)
 
 
 _shared: TokenLog | None = None

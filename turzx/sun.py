@@ -29,3 +29,24 @@ def level(lat: float, lon: float, ts: float, day: int, night: int,
     twilight), `day` above `high`, and a linear fade in between."""
     k = (elevation(lat, lon, ts) - low) / (high - low)
     return round(night + (day - night) * min(1.0, max(0.0, k)))
+
+
+def events(lat: float, lon: float, start: float, end: float, horizon: float = -0.833) -> list[tuple[float, bool]]:
+    """Sunrises and sunsets between unix times `start` and `end`, as (time, is_sunrise),
+    in order. `horizon` -0.833° is the standard rise/set altitude (refraction + disc)."""
+    found, step = [], 600.0
+    at, above = start, elevation(lat, lon, start) > horizon
+    while at < end:
+        nxt = min(end, at + step)
+        now_above = elevation(lat, lon, nxt) > horizon
+        if now_above != above:
+            lo, hi = at, nxt
+            for _ in range(20):  # bisect to well under a second
+                mid = (lo + hi) / 2
+                if (elevation(lat, lon, mid) > horizon) == above:
+                    lo = mid
+                else:
+                    hi = mid
+            found.append(((lo + hi) / 2, now_above))
+        at, above = nxt, now_above
+    return found

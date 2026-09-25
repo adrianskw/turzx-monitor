@@ -40,7 +40,7 @@ class Memory(Widget):
             box = min(int(self.options.get("size", t.ICON_BOX)), w - 12)
             t.glyph_icon(d, w / 2, cy, label, box, centre_x=True)
             bw = int(self.options.get("bar_width", 14))
-            top = round(cy + box / 2 + 10)
+            top = t.px(cy + box / 2 + 10)
             t.vbar(d, (w - bw) / 2, top, bw, h - 10 - top, pct, color)
             return
         if self.options.get("style") == "card":  # no graph: headline, then used/total and bar at the bottom

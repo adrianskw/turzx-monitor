@@ -158,8 +158,8 @@ class Cpu(Widget):
         if column:  # icon level with the headline, bar down to the core bars' bottom edge
             cx, cy = w - t.PAD - column / 2 + 6, t.headline_centre(6, o.get("size", 30))
             t.glyph_icon(d, cx, cy, o.get("ram_label", "\U000F061A"), min(t.ICON_BOX, column - 4), centre_x=True)
-            top = round(cy + t.ICON_BOX / 2 + 8)
-            t.vbar(d, round(cx - 7), top, 14, strip + 14 - top, self.ram_pct, ram_color)
+            top = t.px(cy + t.ICON_BOX / 2 + 8)
+            t.vbar(d, t.px(cx - 7), top, 14, strip + 14 - top, self.ram_pct, ram_color)
         else:  # under the core bars, spanning exactly their extent
             t.bar(d, x, h - 24, bw * n + gap * (n - 1), 14, self.ram_pct, ram_color)
 

@@ -36,6 +36,7 @@ from turzx import theme  # noqa: E402
 def render(layout: Path, out: Path, live: float | None) -> None:
     cfg, slots, cards = turzx_app.load_config(layout, sample=live is None)
     theme.load(cfg.get("theme", "current"), cfg.get("muted_lift", 0.0))
+    theme.use_font(cfg.get("font"), cfg.get("font_scale", "match"))
     app = turzx_app.App(cfg, slots, str(out), cards)
     try:
         if live is None:

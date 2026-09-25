@@ -45,6 +45,10 @@ class Widget:
 
     frame_interval: float | None = None  # seconds between redraws for animation (None = only after update)
 
+    def next_frame(self, now: float) -> float:
+        """Wall-clock time of the next animation redraw; override to slow down when idle."""
+        return math.floor(now / self.frame_interval + 1) * self.frame_interval
+
     def next_delay(self) -> float:
         """Seconds until the next update(); override to e.g. retry sooner after an error."""
         return self.interval

@@ -20,7 +20,7 @@ from turzx.widgets.network import Network
 from turzx.widgets.weather import Weather, WeatherSnapshot
 
 SAMPLE_DATE = datetime(2026, 9, 23, 10, 8)
-SAMPLE_NOW = 1_800_000_000.0
+SAMPLE_NOW = SAMPLE_DATE.timestamp()
 GIB = 1024 ** 3
 
 
@@ -74,6 +74,7 @@ def populate(widget: Widget) -> None:
         examples = {
             "claude": (43, 31, "2h42m", "4d06h"),
             "codex": (26, 54, "1h17m", "2d12h"),
+            "agy": (18, 22, "3h12m", "5d02h"),
         }
         widget.data = {provider: examples[provider] for provider in widget.providers}
         widget.updated_at = {provider: SAMPLE_NOW - 60 for provider in widget.providers}
@@ -102,6 +103,8 @@ def populate(widget: Widget) -> None:
             session.model = "gpt-6.6-astra" if tool == "codex" else "claude-opus-5-5"
             session.effort = {"turzx-5in-display": "xhigh", "landing-page": "medium"}.get(name, "high")
             session.title = "checkout redesign" if name == "landing-page" else ""  # a /rename
+            if name == "landing-page":  # stopped on a permission prompt: shows the bell
+                session.turn_open, session.pending = True, {"toolu_1": "Bash"}
             widget.active.append(session)
     elif isinstance(widget, Burn):
         widget.rate, widget.total_today, widget.cache_hit = 18_500, 3_400_000, 96.0

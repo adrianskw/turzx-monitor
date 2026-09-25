@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime
 
-from turzx import theme as t
+from turzx import sun, theme as t
 from turzx.widget import Widget, register
 from turzx.widgets.clock import Clock
 from turzx.widgets.weather import Weather, glyph
@@ -82,7 +83,7 @@ class ClockWeather(Widget):
         gap = int(o.get("gap", 22))
         time_f = t.font(int(o.get("time_size", 60)), "bold")
         date_f = t.font(int(o.get("date_size", 20)))
-        am_f = t.font(round(time_f.size * 0.3), "bold")
+        am_f = t.font(t.px(t.size_of(time_f) * 0.3), "bold")
         stamp = now.strftime(o.get("format", "%-I:%M"))
         date = now.strftime("%a, %b %-d")
         _, ty0, _, ty1 = d.textbbox((0, 0), "0", font=time_f)
@@ -105,7 +106,7 @@ class ClockWeather(Widget):
             return
         icon = glyph(snap.code, snap.is_day)
         temp_f = t.font(int(o.get("temp_size", 60)), "bold")
-        icon_f = t.font(round(temp_f.size * 0.62))
+        icon_f = t.font(t.px(t.size_of(temp_f) * 0.62))
         ix0, iy0, ix1, iy1 = d.textbbox((0, 0), icon, font=icon_f)
         d.text((x - ix0, h / 2 - (iy0 + iy1) / 2), icon, font=icon_f, fill=t.ORANGE if snap.is_day else t.MAGENTA)
         x += ix1 - ix0 + 8
@@ -246,10 +247,10 @@ class ClockWeather(Widget):
         temp = f"{snapshot.temperature:.0f}°"
         # shrink-to-fit: a third digit (100°+) shrinks the number instead of growing into the clock
         temp_f = t.fit_font(d, temp, ts, col - left - 6)
-        temp_y = -6 - 0.5 * (ts - 90) + (ts - temp_f.size) * 0.45  # keep it vertically centred when shrunk
+        temp_y = -6 - 0.5 * (ts - 90) + (ts - t.size_of(temp_f)) * 0.45  # keep it vertically centred when shrunk
         if behind:  # big faint glyph centred directly behind the temperature digits
             x0, y0, x1, y1 = d.textbbox((col - d.textlength(temp, font=temp_f), temp_y), temp, font=temp_f)
-            icon_f = t.font(round(ts * 4 / 3))  # frames the digits (160 px behind 120 px)
+            icon_f = t.font(t.px(ts * 4 / 3))  # frames the digits (160 px behind 120 px)
             ix0, iy0, ix1, iy1 = d.textbbox((0, 0), icon, font=icon_f)
             d.text(((x0 + x1) / 2 - (ix0 + ix1) / 2, (y0 + y1) / 2 - (iy0 + iy1) / 2), icon, font=icon_f,
                    fill=t.blend(t.CARD, t.ORANGE, 0.2))
@@ -369,6 +370,8 @@ class ClockWeather(Widget):
             raised_f = t.font(int(self.options.get("ampm_size", 22)), "bold")
         if below:
             t.text_right(d, time_right, time_y + dy1 + 8 - by0, now.strftime("%p"), below_f, t.MUTED)
+            if self.options.get("sun", False):
+                self._draw_sun_line(d, time_y + dy1 + 8 - by0, below_f)
         elif raised:
             _, ay0, _, _ = d.textbbox((0, 0), "AM", font=raised_f)
             d.text((time_right + 6, time_y + dy0 - ay0), now.strftime("%p"), font=raised_f, fill=t.MUTED)
@@ -376,7 +379,7 @@ class ClockWeather(Widget):
             # plain AM/PM just left of the digits, top-aligned with them (for wide boxes where a
             # height-limited watermark would hide behind digits of the same size)
             hm_w = d.textlength(now.strftime(self.options.get("format", "%-I:%M")), font=time_f)
-            af = t.font(round(time_f.size * 0.3), "bold")
+            af = t.font(t.px(t.size_of(time_f) * 0.3), "bold")
             _, ay0, _, _ = d.textbbox((0, 0), "AM", font=af)
             t.text_right(d, time_right - hm_w - 12, time_y + dy0 - ay0, now.strftime("%p"), af, t.MUTED)
         elif self.options.get("ampm", True):
@@ -389,6 +392,35 @@ class ClockWeather(Widget):
             _, py0, _, py1 = d.textbbox((0, 0), ampm, font=pm_f)
             t.text_right(d, time_right, h / 2 - (py0 + py1) / 2, ampm, pm_f, faint)
         t.text_right(d, time_right, time_y, now.strftime(self.options.get("format", "%-I:%M")), time_f, t.TEXT)
+
+    def _sun_times(self) -> tuple[float, float] | None:
+        """(next sunrise, next sunset) at the weather location, recomputed at most once a
+        minute. Before dawn both are today's; by day the sunrise is tomorrow's."""
+        loc = self.weather.location
+        if loc is None:
+            return None
+        now = self.clock.now.timestamp()
+        if getattr(self, "_sun_cache", (None,))[0] != now // 60:
+            found = sun.events(loc[0], loc[1], now, now + 36 * 3600)
+            rise = next((ts for ts, up in found if up), None)
+            fall = next((ts for ts, up in found if not up), None)
+            self._sun_cache = (now // 60, (rise, fall) if rise and fall else None)
+        return self._sun_cache[1]
+
+    def _draw_sun_line(self, d, y, f):
+        """Sunrise and sunset under the time, left-aligned, on the AM/PM's line: sun-up and
+        sun-down icons with 12-hour times ("6:42", "6:46"; which is am/pm is obvious)."""
+        times = self._sun_times()
+        if times is None:
+            return
+        _, y0, _, y1 = d.textbbox((0, y), "0", font=f)
+        box, x = t.px(t.size_of(f) * 1.05), t.PAD
+        for icon, ts in (("\U000F059C", times[0]), ("\U000F059B", times[1])):
+            t.glyph_icon(d, x, (y0 + y1) / 2, icon, box, t.ORANGE)
+            x += box + 5
+            text = datetime.fromtimestamp(ts).strftime("%-I:%M")
+            d.text((x, y), text, font=f, fill=t.MUTED)
+            x += d.textlength(text, font=f) + 14
 
     def _draw_row_weather(self, d, left, w, h):
         """Current temperature and conditions, hi/lo/humidity, optional hourly list."""
@@ -416,7 +448,12 @@ class ClockWeather(Widget):
         hs = int(self.options.get("hilo_size", 22))
         hf = t.font(hs, "bold")
         hilo_right = list_left - 16
-        if self.options.get("hilo", True):  # hilo = false: the forecast widget shows them
+        # hilo_style = "below": one small line under the temperature, right-aligned with it
+        # (like the time card's AM/PM), leaving the height left of the digits to the icon
+        hilo_below = self.options.get("hilo", True) and self.options.get("hilo_style") == "below"
+        if hilo_below:
+            temp_right = hilo_right
+        elif self.options.get("hilo", True):  # hilo = false: the forecast widget shows them
             hstep = (h - 20) / 3
             t.text_right(d, hilo_right, 8, f"↑{snap.high:.0f}°", hf, t.RED)
             t.text_right(d, hilo_right, 8 + hstep, f"↓{snap.low:.0f}°", hf, t.CYAN)
@@ -433,13 +470,16 @@ class ClockWeather(Widget):
         if self.options.get("align") == "time" and self._time_partner is not None:
             partner, partner_w, partner_h = self._time_partner
             _, _, _, time_f, time_y, _, digit_bottom = partner._row_time_geometry(d, partner_w - t.PAD, partner_h)
-            match = time_f.size, time_y + digit_bottom
-        if icon_left:
+            match = t.size_of(time_f), time_y + digit_bottom
+        if icon_left and hilo_below:
+            # the temperature keeps its size (a third digit narrows the icon instead)
+            temp_f = t.font(match[0] if match else int(self.options.get("temp_size", 96)), "bold")
+        elif icon_left:
             # align = "time": the time card's digit size, if it fits (3-digit temps shrink)
             size = match[0] if match else int(self.options.get("temp_size", 96))
             while True:
                 temp_f = t.font(size, "bold")
-                icon_f = t.font(max(12, round(size * 0.58)))
+                icon_f = t.font(max(12, t.px(size * 0.58)))
                 ix0, iy0, ix1, iy1 = d.textbbox((0, 0), icon, font=icon_f)
                 if d.textlength(temp, font=temp_f) + (ix1 - ix0) + 8 <= temp_right - left or size <= 12:
                     break
@@ -450,11 +490,28 @@ class ClockWeather(Widget):
         tx, ty = temp_right - d.textlength(temp, font=temp_f), h / 2 - (y0 + y1) / 2
         if match:  # digits sit on the same bottom line as the time's
             ty = match[1] - y1
-        if icon_left:
+        if hilo_below:
+            # the line's ink starts 8 px under the digits, as the AM/PM does under the time
+            below_f = t.font(int(self.options.get("hilo_size", 18)), "bold")
+            _, by0, _, by1 = d.textbbox((0, 0), "AM", font=below_f)
+            line_y = ty + y1 + 8 - by0
+            # no arrows or drop: red high, cyan low and muted humidity say which is which
+            fields = [(f"{snap.high:.0f}°", t.RED), (f"{snap.low:.0f}°", t.CYAN),
+                      (t.pct_text(snap.humidity), t.MUTED)]
+            t.fields_right(d, temp_right, line_y, fields, below_f, gap=" ")
+            line_left = temp_right - d.textlength(" ".join(text for text, _ in fields), font=below_f)
+        if icon_left and hilo_below:
+            # as large as the card's height allows, centred in the space left of the digits
+            # (and clear of the hi/lo line under them)
+            limit = min(tx, line_left) - 10
+            box = max(12, min(t.px(h - 20), t.px(limit - left)))
+            t.glyph_icon(d, (left + limit) / 2, h / 2, icon, box,
+                         t.ORANGE if snap.is_day else t.MAGENTA, centre_x=True)
+        elif icon_left:
             d.text((tx - ix1 - 8, ty + (y0 + y1) / 2 - (iy0 + iy1) / 2), icon, font=icon_f,
                    fill=t.ORANGE if snap.is_day else t.MAGENTA)
         else:
-            icon_f = t.font(round(temp_f.size * 4 / 3))
+            icon_f = t.font(t.px(t.size_of(temp_f) * 4 / 3))
             ix0, iy0, ix1, iy1 = d.textbbox((0, 0), icon, font=icon_f)
             cx, cy = tx + (x0 + x1) / 2, ty + (y0 + y1) / 2
             d.text((cx - (ix0 + ix1) / 2, cy - (iy0 + iy1) / 2), icon, font=icon_f,
