@@ -4,6 +4,11 @@ Claude Code: ~/.claude/projects/<project>/<session>.jsonl, one entry per message
 assistant entries carry message.usage.
 Codex:       ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl; session_meta has the cwd,
 event_msg/token_count entries carry last_token_usage.
+Antigravity: ~/.gemini/antigravity-cli/conversations/<id>.db, one SQLite file per
+conversation. A running `agy` holds presence/<id>.lock open (so it's live), the file's writes give its
+activity, its process the directory and model, and annotations/<id>.pbtxt its title. Of
+the contents, only the newest gen_metadata record is read, and of it only the context size
+and window (protobuf fields, see _agy_context); no token counts.
 
 "Burn" counts fresh tokens: input + output (+ cache writes), excluding cache reads,
 which dominate raw totals but are cheap re-reads of the same context.
@@ -20,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import threading
 import time
 from collections import deque
@@ -30,6 +36,7 @@ CLAUDE_DIR = Path.home() / ".claude/projects"
 CODEX_DIR = Path.home() / ".codex/sessions"
 CODEX_INDEX = Path.home() / ".codex/session_index.jsonl"  # {"id", "thread_name"} per named thread
 CLAUDE_REGISTRY = Path.home() / ".claude/sessions"  # <pid>.json per running Claude Code: pid, sessionId
+AGY_DIR = Path.home() / ".gemini/antigravity-cli"
 PROC = Path("/proc")
 LIVE_GRACE = 60.0  # seconds a session with no live process stays listed (a run just ending)
 MAX_RATE_MINUTES = 24 * 60
@@ -66,6 +73,7 @@ class Session:
         self.codex_totals: tuple[int, int, int] | None = None  # cumulative input, cached input, output
         self.cleared_at: float | None = None  # Claude: when /clear started this log (replacing another)
         self.subagent = False  # Codex: a thread spawned by another (e.g. a guardian review)
+        self.agy_context: tuple[int, int | None] | None = None  # agy: see _agy_context
 
     @property
     def label(self) -> str:
@@ -157,6 +165,8 @@ INTERRUPTED = "[Request interrupted by user"
 CLEAR = "<command-name>/clear</command-name>"
 CODEX_HOUSEKEEPING = {"thread_settings_applied"}
 CLEAR_SLACK = 10.0  # seconds between /clear and the replaced log's last write
+AGY_EFFORTS = {"low", "medium", "high", "max"}  # model id suffixes, e.g. gemini-3.8-flash-high
+QUIET_SECONDS = 60.0  # agy: a write after this long without one starts a new job
 
 
 def _turn_update(s: "Session", tool: str, entry: dict, prompt: bool) -> None:
@@ -269,6 +279,123 @@ def _open_codex() -> set[str] | None:
         except OSError:
             continue
     return paths
+
+
+def _agy_model(name: str) -> tuple[str, str]:
+    """agy's model, by display name or id (`agy models`), to (model, effort):
+    "Gemini 3.8 Flash (High)" and "gemini-3.8-flash-high" -> ("gemini-3.8-flash", "high")."""
+    name, _, effort = name.strip().partition("(")
+    model = "-".join(name.lower().split())
+    if not effort:
+        base, _, tail = model.rpartition("-")
+        if base and tail in AGY_EFFORTS:
+            return base, tail
+    return model, effort.rstrip(")").strip().lower()
+
+
+def _flag(args: list[str], name: str) -> str | None:
+    """A command line flag's value: `--name value` or `--name=value`."""
+    for i, arg in enumerate(args):
+        if arg == name and i + 1 < len(args):
+            return args[i + 1]
+        if arg.startswith(name + "="):
+            return arg[len(name) + 1:]
+    return None
+
+
+def _pb_fields(buf: bytes):
+    """(field number, wire type, value) of each field in one protobuf message; varints as
+    ints, length-delimited fields as bytes, fixed-width fields skipped over."""
+    i, n = 0, len(buf)
+    while i < n:
+        key = shift = 0
+        while True:
+            byte = buf[i]; i += 1
+            key |= (byte & 0x7F) << shift; shift += 7
+            if byte < 0x80:
+                break
+        number, wire = key >> 3, key & 7
+        if wire == 0:
+            value = shift = 0
+            while True:
+                byte = buf[i]; i += 1
+                value |= (byte & 0x7F) << shift; shift += 7
+                if byte < 0x80:
+                    break
+        elif wire == 2:
+            size = shift = 0
+            while True:
+                byte = buf[i]; i += 1
+                size |= (byte & 0x7F) << shift; shift += 7
+                if byte < 0x80:
+                    break
+            value, i = buf[i:i + size], i + size
+        elif wire in (1, 5):
+            value, i = None, i + (8 if wire == 1 else 4)
+        else:
+            raise ValueError("unsupported wire type")
+        if i > n:
+            raise ValueError("truncated")
+        yield number, wire, value
+
+
+def _pb_get(buf: bytes, *path: int):
+    """The first value at a path of field numbers, e.g. _pb_get(row, 1, 9, 10, 1)."""
+    for depth, number in enumerate(path):
+        found = next((v for f, _, v in _pb_fields(buf) if f == number), None)
+        if found is None or (depth < len(path) - 1 and not isinstance(found, bytes)):
+            return None
+        buf = found
+    return buf
+
+
+def _agy_context(db: Path) -> tuple[int, int | None] | None:
+    """(context tokens, context window) from a conversation's newest generation record, or
+    None. In each gen_metadata row, field 1 is the generation, and its 9.10 the context:
+    1 the tokens in use (the sum of its parts in 9.10.3), 4 the window."""
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
+        try:
+            row = conn.execute("SELECT data FROM gen_metadata ORDER BY idx DESC LIMIT 1").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    if not row or not isinstance(row[0], bytes):
+        return None
+    try:
+        gen = _pb_get(row[0], 1)
+        context = _pb_get(gen, 9, 10) if isinstance(gen, bytes) else None
+        used = _pb_get(context, 1) if isinstance(context, bytes) else None
+        if not isinstance(used, int):
+            return None
+        window = _pb_get(context, 4)
+    except (ValueError, IndexError):
+        return None
+    return used, window if isinstance(window, int) and window > 0 else None
+
+
+def _open_agy() -> dict[str, tuple[str, list[str]]] | None:
+    """Conversation files of running agy sessions (yours: other users' processes can't be
+    inspected), found by the presence lock each holds open, with that process's working
+    directory and arguments; None without /proc."""
+    if not PROC.is_dir():
+        return None
+    found = {}
+    for proc in PROC.iterdir():
+        try:
+            if not proc.name.isdigit() or (proc / "comm").read_text().strip() != "agy":
+                continue
+            for fd in (proc / "fd").iterdir():
+                target = os.readlink(fd)
+                # held for the whole session (the conversation file itself only while busy)
+                if target.endswith(".lock") and "/antigravity-cli/presence/" in target:
+                    lock = Path(target)
+                    args = (proc / "cmdline").read_bytes().decode(errors="replace").split("\0")
+                    found[str(lock.parent.parent / "conversations" / f"{lock.stem}.db")] = (os.readlink(proc / "cwd"), args)
+        except OSError:
+            continue
+    return found
 
 
 class TokenLog:
@@ -419,6 +546,44 @@ class TokenLog:
                     self._read_new(s, midnight)
             self.events = deque(e for e in self.events if e[0] >= now - EVENT_SECONDS)
             self._name_codex()
+            self._scan_agy()
+
+    def _scan_agy(self) -> None:
+        """Antigravity sessions: one per conversation a running agy holds open. Activity is
+        the conversation file's last write (the database or its write-ahead log); a write
+        after a quiet spell starts a new job."""
+        agy = _open_agy()
+        if not agy:
+            return
+        try:
+            default = json.loads((AGY_DIR / "settings.json").read_text()).get("model", "")
+        except (OSError, ValueError, AttributeError):
+            default = ""
+        for target, (cwd, args) in agy.items():
+            path = Path(target)
+            try:
+                written = max(os.stat(str(path) + suffix).st_mtime for suffix in ("", "-wal")
+                              if os.path.exists(str(path) + suffix))
+            except (OSError, ValueError):
+                continue
+            s = self.sessions.get(path)
+            if s is None:
+                s = self.sessions[path] = Session("agy", path)
+            if written > s.mtime:
+                if written - s.mtime > QUIET_SECONDS:
+                    s.turn_start = written
+                s.mtime = s.file_mtime = s.activity = written
+                s.agy_context = _agy_context(path)
+            s.cwd = cwd
+            model, effort = _agy_model(_flag(args, "--model") or str(default))
+            if s.agy_context:
+                s.context, s.window = s.agy_context
+            s.model, s.effort = model, _flag(args, "--effort") or effort
+            try:  # title:"Repository Code Audit"
+                note = (AGY_DIR / "annotations" / f"{path.stem}.pbtxt").read_text(errors="replace")
+                s.title = json.loads(note.split("title:", 1)[1].strip().splitlines()[0]) if "title:" in note else ""
+            except (OSError, ValueError, IndexError):
+                s.title = ""
 
     def _name_codex(self) -> None:
         """Codex keeps thread names outside the rollout logs, in one small index file."""
@@ -468,9 +633,10 @@ class TokenLog:
         with self._lock:
             live = [s for s in self.sessions.values() if s.mtime >= cutoff and not s.subagent]
         # Sessions whose process has exited drop out (after a short grace), not after `minutes`.
-        claude, codex, now = _live_claude(), _open_codex(), time.time()
+        claude, codex, agy, now = _live_claude(), _open_codex(), _open_agy(), time.time()
         live = [s for s in live if now - s.mtime < LIVE_GRACE or (
             (claude is None or s.path.stem in claude) if s.tool == "claude" else
+            (agy is None or str(s.path) in agy) if s.tool == "agy" else
             (codex is None or str(s.path) in codex))]
         with self._lock:
             clears = [c for c in live if c.cleared_at is not None]

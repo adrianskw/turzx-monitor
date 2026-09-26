@@ -122,7 +122,21 @@ class SingleRowTests(unittest.TestCase):
                 widget.active = (widget.active * 3)[:n]
                 with patch.object(t, "bar", wraps=t.bar) as bar:
                     widget.draw(ImageDraw.Draw(Image.new("RGB", (485, 260))), 485, 260)
-                self.assertEqual(bar.call_count, min(n, 6))
+                shown = widget.active[:6]  # 9: six rows, then "+3 more"
+                self.assertEqual(bar.call_count, sum(1 for s in shown if s.context))  # unknown: no bar
+
+    def test_grow_gives_one_session_the_card_and_two_halves(self):
+        for n, hero, k in ((1, 1, None), (2, 1, None), (3, 0, 1.0)):
+            with self.subTest(sessions=n):
+                widget = Agents(stats="none", rows="single", detail_rows=4, grow=True, status="dot")
+                populate(widget)
+                widget.active = widget.active[:n]
+                d = ImageDraw.Draw(Image.new("RGB", (485, 260)))
+                with patch.object(widget, "_draw_hero", wraps=widget._draw_hero) as draw_hero, \
+                        patch.object(widget, "_draw_detailed", wraps=widget._draw_detailed) as detailed:
+                    widget.draw(d, 485, 260)
+                self.assertEqual(draw_hero.call_count, hero)
+                self.assertEqual(detailed.call_count, int(k is not None))
 
 
 class WaitingTests(unittest.TestCase):

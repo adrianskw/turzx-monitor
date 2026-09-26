@@ -17,7 +17,8 @@ follow_session = true
 flip = false
 theme = "current"
 muted_lift = 0.3        # secondary text (labels, units, sizes) closer to the main text
-font = "UbuntuMono Nerd Font"  # scaled to JetBrains Mono's character width, so sizes stay tuned
+font = "CommitMono Nerd Font"  # scaled to JetBrains Mono's character width, so sizes stay tuned
+margin = 14             # every card: 14 px from its edges to its content, on all four sides
 
 [[widget]]
 type = "clock_weather"
@@ -97,12 +98,15 @@ stats = "none"
 status = "dot"
 rows = "single"
 row_height = 32
-max_rows = 6            # 6 sessions, then a "+N more" row
+max_rows = 7            # 7 sessions; 8+: 6, then a "+N more" row
 summary = true          # on the "+N more" row: sessions per tool and how many are working
 time_colors = true      # working dot by job run time, idle timer by idle time: green -> yellow 10 min -> red 20 min
 context_colors = true   # name: -> yellow -> red as the context window fills
 tokens = false          # no per-session token counts
 detail_rows = 4         # up to 4 sessions: two lines each (model, context-fill bar); 5+: compact rows
+grow = true             # 1 session: the card to itself; 2: half each, same lines
+sleepy = true           # no sessions: the Claude, Codex and agy icons doze, z's drifting up
+nudge = true            # 1 session: a vine creeps along under it, overgrown after 30 min solo
 spread = true           # compact rows share out the card height
 context_bar = true      # compact rows: context tokens + a slim fill bar between name and timer
 waiting = true          # bell + magenta timer when a session is stopped on a prompt or question

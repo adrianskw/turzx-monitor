@@ -50,6 +50,12 @@ def not_started(reset: str) -> bool:
     return parse_duration(reset) is None and reset.strip().lower().startswith("not")
 
 
+def shown_reset(reset: str, window: str) -> str:
+    """The countdown to draw: an unused window hasn't started its clock, so it shows the
+    full span it will get (5h00m, 7d00h)."""
+    return reset_text(window) if not_started(reset) else reset_text(reset)
+
+
 def pace_pct(reset: str, window: str, age: float) -> float | None:
     """How far through the window we are (0-100), i.e. where even usage would be."""
     remaining = parse_duration(reset)
@@ -189,7 +195,7 @@ class AiUsage(Widget):
             if win is None:
                 continue
             left = max(0.0, min(1.0, float(b["remaining_fraction"])))
-            if win == "5h" and left >= 1:
+            if left >= 1:
                 reset = "not started"  # an untouched window's reset just trails the clock
             else:
                 ends = datetime.fromisoformat(b["reset_time"].replace("Z", "+00:00")).timestamp()
@@ -264,7 +270,7 @@ class AiUsage(Widget):
                 ty = cy - t.size_of(pct_f) * 0.62
                 t.text_right(d, pct_right, ty, t.pct_text(pct), pct_f, self._pct_color(pct, pace))
                 if not soon_mode or self._show_reset(reset, win):
-                    t.text_right(d, reset_right, cy - t.size_of(reset_f) * 0.62, reset_text(reset), reset_f, t.MUTED)
+                    t.text_right(d, reset_right, cy - t.size_of(reset_f) * 0.62, shown_reset(reset, win), reset_f, t.MUTED)
             if age_text := self.freshness_text(p):
                 if self.options.get("stale") == "icon":  # clock-alert on the logo's corner, no text
                     t.stale_mark(d, t.PAD + logo - 12, by + block / 2 - logo / 2 - 8, 20)
@@ -287,10 +293,20 @@ class AiUsage(Widget):
             return x + d.textlength(text, font=f)
 
         block = (h - 2 * y) / len(self.providers)
+        rows = None
+        if t.MARGIN is not None:
+            # per provider: header (logo), the 5h bar, the 7d bar with its reset text; 6 px
+            # apart, the spare height between providers, the first and last on the margins
+            heights = [max(logo, y1 - y0), 16, max(8, sy1 - sy0)]
+            rows = [[top + hh / 2 for top, hh in zip(g, heights)]
+                    for g in t.spread(t.PAD, h - t.PAD, [heights] * len(self.providers), within=6)]
         for i, p in enumerate(self.providers):
             color = PROVIDERS[p][2]
             top = y + i * block
-            head, row5, row7 = top + block * 0.22, top + block * 0.56, top + block * 0.82  # row centres
+            if rows:
+                head, row5, row7 = rows[i]
+            else:
+                head, row5, row7 = top + block * 0.22, top + block * 0.56, top + block * 0.82  # row centres
             t.icon(d, t.PAD, t.px(head - logo / 2), p, logo)
             val = self.data[p]
             x = t.PAD + logo + 12
@@ -322,11 +338,9 @@ class AiUsage(Widget):
                 if pace is not None:  # usage target at this point in the window
                     mx = round(t.PAD + bw * pace / 100)
                     d.rectangle((mx - 1, by - 2, mx, by + bh + 1), fill=t.TEXT)
-                # an unused 5h window hasn't started its clock: show the full 5h00m it will get
-                idle5 = win == "5h" and not_started(reset)
-                if idle5 or self.options.get("resets", "always") != "soon" or self._show_reset(reset, win):
-                    text = reset_text("5h") if idle5 else reset_text(reset)
-                    t.text_right(d, right, cy - (sy0 + sy1) / 2, text, small, t.MUTED)
+                # an unused window hasn't started its clock: show the full span it will get
+                if not_started(reset) or self.options.get("resets", "always") != "soon" or self._show_reset(reset, win):
+                    t.text_right(d, right, cy - (sy0 + sy1) / 2, shown_reset(reset, win), small, t.MUTED)
             if self.freshness_text(p):
                 t.stale_mark(d, t.PAD + logo - 12, t.px(head - logo / 2) - 6, 18)
 
@@ -369,7 +383,7 @@ class AiUsage(Widget):
                     d.rectangle((mx - 1, ry + 3, mx, ry + 26), fill=t.TEXT)
                 t.text_right(d, pct_right, ry, t.pct_text(pct), fb, self._pct_color(pct, pace))
                 if not soon_mode:
-                    t.text_right(d, w - t.PAD, ry, reset_text(reset), f, t.MUTED)
+                    t.text_right(d, w - t.PAD, ry, shown_reset(reset, win), f, t.MUTED)
                 elif self._show_reset(reset, win):
                     t.text_right(d, bx + bw, ry + 22, f"resets {reset_text(reset)}", t.font(13, "bold"), t.YELLOW)
             if age_text := self.freshness_text(p):
@@ -395,6 +409,6 @@ class AiUsage(Widget):
                 d.rectangle((mx - 1, y + 1, mx, y + bar_h + 9), fill=t.TEXT)
             t.text_right(d, w - 77, y - 2, f"{pct}%", t.font(17, "bold"), self._pct_color(pct, pace))
             if self.options.get("resets", "always") != "soon" or self._show_reset(reset, label):
-                t.text_right(d, w - 13, y, reset_text(reset), t.font(12), t.MUTED)
+                t.text_right(d, w - 13, y, shown_reset(reset, label), t.font(12), t.MUTED)
         if age_text := self.freshness_text(p):
             d.text((82, h - 17), age_text, font=t.font(11), fill=t.YELLOW)

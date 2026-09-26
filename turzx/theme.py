@@ -184,9 +184,16 @@ def _icon(name: str, size: int) -> Image.Image:
     return Image.open(ASSETS / f"{name}.png").convert("RGBA").resize((size, size), Image.LANCZOS)
 
 
-def icon(d: ImageDraw.ImageDraw, x: int, y: int, name: str, size: int) -> None:
-    """Paste turzx/assets/<name>.png onto the widget image, alpha-blended."""
-    img = _icon(name, size)
+@lru_cache(maxsize=256)
+def _faded_icon(name: str, size: int, alpha: float) -> Image.Image:
+    img = _icon(name, size).copy()
+    img.putalpha(img.getchannel("A").point(lambda v: int(v * alpha)))
+    return img
+
+
+def icon(d: ImageDraw.ImageDraw, x: int, y: int, name: str, size: int, alpha: float = 1.0) -> None:
+    """Paste turzx/assets/<name>.png onto the widget image, alpha-blended; `alpha` < 1 fades it."""
+    img = _icon(name, size) if alpha >= 1 else _faded_icon(name, size, round(max(0.0, alpha), 2))
     d._image.paste(img, (px(x), px(y)), img)  # ImageDraw keeps a reference to its target image
 
 
@@ -202,7 +209,60 @@ def level_color(pct: float) -> tuple[int, int, int]:
 TITLE = 20
 BODY = 20
 BIG = 60  # headline numbers
-PAD = 14  # inner horizontal padding of a card
+PAD = 14  # inner padding of a card, from its box edge (the card itself is inset 2 px)
+MARGIN: int | None = None  # [display] margin: ink to card edge on every side; None: legacy spacing
+
+
+def set_margin(margin: int | None) -> None:
+    """[display] margin: every card keeps its content `margin` px from its edges, on all four
+    sides (the card is inset 2 px in its box, so PAD becomes margin + 2)."""
+    global PAD, MARGIN
+    if margin is not None and (type(margin) is not int or not 0 <= margin <= 40):
+        raise ValueError("margin must be a whole number of pixels from 0 to 40")
+    MARGIN = margin
+    PAD = 14 if margin is None else margin + 2
+
+
+def spread(top: float, bottom: float, groups, within: float | None = None, ratio: float = 2.0,
+           max_within: float | None = None) -> list[list[int]]:
+    """Ink tops for groups of items (their ink heights) stacked from `top` to `bottom` (ink
+    edges, box-relative, bottom exclusive). Items in a group sit `within` apart; by default
+    the spare height is shared so gaps between groups are `ratio` times those inside
+    (`max_within` caps the inside gap, the rest going between groups). A single group spreads
+    its items evenly. Gaps are whole pixels, so equal gaps stay equal; the rounding leftover
+    (a few px) is split between the two edges."""
+    heights = [hh for g in groups for hh in g]
+    n_in = sum(len(g) - 1 for g in groups)
+    n_between = len(groups) - 1
+    spare = bottom - top - sum(heights)
+    if n_between == 0:
+        inside, between = (spare / n_in if n_in else 0.0), 0.0
+    elif within is not None:
+        inside = within
+        between = (spare - n_in * inside) / n_between
+    else:
+        inside = spare / (n_in + ratio * n_between)
+        if max_within is not None and inside > max_within:
+            inside = max_within
+        between = (spare - n_in * inside) / n_between
+    inside, between = max(0, math.floor(inside)), max(0, math.floor(between))
+    used = sum(heights) + n_in * inside + n_between * between
+    y = top + max(0, (bottom - top - used) // 2)
+    out = []
+    for g in groups:
+        tops = []
+        for i, hh in enumerate(g):
+            tops.append(int(y))
+            y += hh + (inside if i < len(g) - 1 else 0)
+        out.append(tops)
+        y += between
+    return out
+
+
+def ink(d: ImageDraw.ImageDraw, fnt, text: str = "0") -> tuple[float, float]:
+    """(top, bottom) of text's ink relative to its drawing origin; digits by default."""
+    _, y0, _, y1 = d.textbbox((0, 0), text, font=fnt)
+    return y0, y1
 RADIUS = 4  # card corner radius
 BAR_RADIUS = 3
 
@@ -460,6 +520,14 @@ def headline_centre(y: int, size: int = 30) -> float:
     return (y0 + y1) / 2
 
 
+def headline_y(size: int = 30) -> int:
+    """y to draw a stat_line at: its digits' ink top on the card's top margin (6 without one)."""
+    if MARGIN is None:
+        return 6
+    _, y0, _, _ = ImageDraw.Draw(Image.new("L", (1, 1))).textbbox((0, 0), "0", font=font(size, "bold"))
+    return px(PAD - y0)
+
+
 def graph_with_bar(d: ImageDraw.ImageDraw, w: int, h: int, size: int, history, color,
                    pct: float, bar_color, fields, y: int = 6, gap: str = " ") -> None:
     """Body of a card under its stat_line at y: a memory bar in line with the headline,
@@ -471,7 +539,8 @@ def graph_with_bar(d: ImageDraw.ImageDraw, w: int, h: int, size: int, history, c
     readings = d.textlength(gap.join(text for text, _ in fields), font=f)
     left = PAD + ICON_BOX + 10
     bar(d, left, px(headline_centre(y, size) - 7), w - PAD - readings - 14 - left, 14, pct, bar_color)
-    top, bottom = px(digits) + 4, h - 10
+    # with a margin: 6 px under the digits, down to the bottom margin
+    top, bottom = (px(digits) + 4, h - 10) if MARGIN is None else (px(digits) + 6, h - PAD)
     sparkline(d, PAD, top, w - 2 * PAD, bottom - top, history, color=color, dim=True)
 
 

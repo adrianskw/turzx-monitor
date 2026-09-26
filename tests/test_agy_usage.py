@@ -44,3 +44,18 @@ class AgyUsageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnusedWindowTests(unittest.TestCase):
+    def test_unused_windows_show_their_full_span(self):
+        from turzx.widgets.ai_usage import shown_reset
+        self.assertEqual(shown_reset("Not started", "5h"), "5h00m")
+        self.assertEqual(shown_reset("Not started", "7d"), "7d00h")
+        self.assertEqual(shown_reset("598826s", "7d"), "6d22h")
+
+
+class ContextTextTests(unittest.TestCase):
+    def test_context_is_whole_thousands_below_a_million(self):
+        from turzx.widgets.agents import context_text
+        self.assertEqual([context_text(n) for n in (0, 60000, 51400, 999400, 999600)],
+                         ["—", "60K", "51K", "999K", "1.0M"])

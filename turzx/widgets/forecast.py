@@ -32,6 +32,7 @@ class Forecast(Widget):
         if snap is None:
             d.text((t.PAD, y), self.weather.error or "loading…", font=t.font(16), fill=t.MUTED)
             return
+        header = self.options.get("now", False) or self.options.get("summary", False)
         if self.options.get("now", False):
             y = self._draw_now(d, w, y, snap)
         if self.options.get("summary", False):  # today's high / low / humidity as a header row
@@ -48,11 +49,19 @@ class Forecast(Widget):
         col_w = (w - 2 * t.PAD) / self.columns
         row_h = (h - y - 10) / per_col
         deg = "" if any(len(f"{hr[3]:.0f}") > 2 for hr in hours) else "°"
+        if t.MARGIN is not None and not header:  # rows from the top margin to the bottom one
+            row_h = (h - 2 * t.PAD) / per_col
         lf, tf, gf = self._fonts(d, row_h, col_w - 12 * (self.columns > 1), deg)
+        mids = None
+        if t.MARGIN is not None and not header:
+            # the temperatures' digits on the margins, whole-pixel gaps between rows
+            d0, d1 = t.ink(d, tf)
+            mids = [g[0] + (d1 - d0) / 2 for g in t.spread(t.PAD, h - t.PAD, [[d1 - d0]] * per_col)]
         for i, (when, code, is_day, temp) in enumerate(hours):
             c, r = divmod(i, per_col)
             x0, x1 = t.PAD + c * col_w, t.PAD + (c + 1) * col_w - (12 if c < self.columns - 1 else 0)
-            mid = y + r * row_h + row_h / 2  # every glyph is centred on the row's middle
+            # every glyph is centred on the row's middle
+            mid = mids[r] if mids else y + r * row_h + row_h / 2
             label_right = x0 + d.textlength("12am", font=lf)
             t.text_right(d, label_right, mid - self._half(d, lf), when.strftime("%-I%p").lower(), lf, t.MUTED)
             d.text((label_right + (8 if self.options.get("fill") else 4), mid - self._half(d, gf, glyph(code, is_day))), glyph(code, is_day),

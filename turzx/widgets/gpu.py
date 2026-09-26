@@ -93,9 +93,10 @@ class Gpu(Widget):
         if o.get("power", True) and self.power is not None:
             fields.append((t.watts_text(self.power, 3), t.threshold_color(self.power, o.get("power_warn", 180), o.get("power_crit", 210))))
         vram = 100 * self.mem_used / self.mem_total if self.mem_total else 0
-        t.stat_line(d, w, 6, o.get("label", "GPU"), fields, size=o.get("size", 30))
+        y = t.headline_y(o.get("size", 30)) if inline else 6
+        t.stat_line(d, w, y, o.get("label", "GPU"), fields, size=o.get("size", 30))
         if inline:
-            t.graph_with_bar(d, w, h, o.get("size", 30), self.history, color, vram, color, fields)
+            t.graph_with_bar(d, w, h, o.get("size", 30), self.history, color, vram, color, fields, y=y)
             return
         t.usage_bar(d, w, h, vram, self.mem_used, self.mem_total, color, o.get("mem_numbers", True))
 

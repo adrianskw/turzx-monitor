@@ -12,7 +12,16 @@ from turzx.widget import Widget, register
 
 CLAUDE_SETTINGS = Path.home() / ".claude/settings.json"  # autoCompactWindow: Claude's usable context
 EFFORT = {"medium": "med"}  # short forms for the detail line; others fit as logged
-CONTEXT_BAR_W = 64  # `context_bar`: fill bar width on single rows
+CONTEXT_BAR_W = 48  # `context_bar`: fill bar width on single rows
+
+
+def context_text(n: int) -> str:
+    """Context size in whole thousands (60K, 170K); a decimal only from a million (1.0M)."""
+    if not n:
+        return "—"
+    if n >= 999_500:
+        return t.human_count(n)
+    return f"{n / 1e3:.0f}K"
 
 
 @register("agents")
@@ -46,7 +55,13 @@ class Agents(Widget):
         self.active: list[Session] = []
         self.history_sources: dict[str, Widget] = {}
         self.preview_now: float | None = None
-        if options.get("status") == "dot" or options.get("waiting", False):
+        self.sleepy = options.get("sleepy", False)  # no sessions: the tool icons doze, z's drifting up
+        self.nudge = options.get("nudge", False)    # one session (`grow`): a vine creeps along under it
+        self.nudge_minutes = float(options.get("nudge_minutes", 30))
+        if not math.isfinite(self.nudge_minutes) or self.nudge_minutes <= 0:
+            raise ValueError("nudge_minutes must be a positive finite number")
+        self.solo_since: float | None = None  # when the session count last became one
+        if options.get("status") == "dot" or options.get("waiting", False) or self.sleepy or self.nudge:
             # The working dot and waiting bell breathe every `pulse` seconds,
             # redrawn every `pulse_step` seconds (a tiny region, so cheap to send).
             for name, attr, default in (("pulse", "pulse", 10), ("pulse_step", "frame_interval", 1)):
@@ -66,6 +81,10 @@ class Agents(Widget):
         self.total_today = log.total_today()
         self.cache_hit = log.cache_hit(self.rate_minutes)
         self.active = log.active(self.active_minutes)
+        if len(self.active) != 1:
+            self.solo_since = None
+        elif self.solo_since is None:
+            self.solo_since = time.time()
 
     def bind_history_sources(self, sources: dict[str, Widget]) -> None:
         """Use the CPU/GPU widgets' already collected samples for the dense view."""
@@ -307,6 +326,8 @@ class Agents(Widget):
         """Every `pulse_step` while a dot or bell is on screen; otherwise only when an idle
         timer next ticks over ('1m' -> '2m', '1h' -> '2h'), and at least once a minute."""
         wake = now + 60
+        if (self.sleepy and not self.active) or (self._nudging() and len(self.active) == 1):
+            return super().next_frame(now)
         for s in self.active:
             idle = now - s.mtime
             if self._waiting(s) or idle < self.working_seconds:
@@ -314,6 +335,71 @@ class Agents(Widget):
             unit = 86400 if idle >= 86400 else 3600 if idle >= 3600 else 60
             wake = min(wake, s.mtime + (idle // unit + 1) * unit)
         return wake
+
+    def _nudging(self) -> bool:
+        return self.nudge and self.options.get("grow", False) and self.options.get("rows") == "single"
+
+    def _draw_sleeping(self, d, left, y, w, h):
+        """No sessions (`sleepy`): Claude, Codex and agy doze in a row, each breathing out of step,
+        with z's drifting up and fading off to their upper right."""
+        now = self._now()
+        size, step = 44, 104
+        cap_f = t.font(17)
+        _, c0, _, c1 = d.textbbox((0, 0), "0", font=cap_f)
+        block = 40 + size + 16 + (c1 - c0)  # z's, icons, caption
+        top = (h - block) / 2 + 40
+        x0 = (w - (2 * step + size)) / 2
+        for i, tool in enumerate(("claude", "codex", "agy")):
+            ix = x0 + i * step
+            breath = 0.5 + 0.5 * math.cos(2 * math.pi * (now / 8 + i / 3))
+            t.icon(d, ix, top, tool, size, alpha=0.3 + 0.25 * breath)
+            for p in range(2):  # two z's per icon, half a cycle apart
+                age = ((now + 2 * i) / 6 + p / 2) % 1
+                zf = t.font(t.px(12 + 10 * age), "bold")
+                color = t.blend(t.CARD, t.TEXT, 0.8 * math.sin(math.pi * age))
+                d.text((ix + size * 0.8 + 14 * age, top - 2 - 40 * age), "z", font=zf, fill=color)
+        caption = "no agents running"
+        d.text(((w - d.textlength(caption, font=cap_f)) / 2, top + size + 16 - c0), caption,
+               font=cap_f, fill=t.MUTED)
+
+    def _draw_vine(self, d, left, right, top, height):
+        """One session (`nudge`): a vine creeps from the left for as long as only one agent runs,
+        reaching the caption after `nudge_minutes`. Its leaves sway; past that it's overgrown:
+        the leaves yellow and the caption, in yellow, says how long it has been solo."""
+        now = self._now()
+        solo = max(0.0, now - (self.solo_since if self.solo_since is not None else now))
+        grown = solo / (self.nudge_minutes * 60)
+        cap_f = t.font(17)
+        _, c0, _, c1 = d.textbbox((0, 0), "0", font=cap_f)
+        cy = top + height / 2
+        if grown >= 1:
+            caption, cap_color = f"{t.duration_text(solo)} solo", t.YELLOW
+        else:
+            caption = ("just one agent" if grown < 0.25 else "room for more" if grown < 0.5
+                       else "spin up another?")
+            cap_color = t.MUTED
+        t.text_right(d, right, cy - (c0 + c1) / 2, caption, cap_f, cap_color)
+        end = right - d.textlength("spin up another?", font=cap_f) - 16  # the caption's widest
+        length = 14 + (end - left - 14) * min(1.0, grown)
+        leaf = t.blend(t.GREEN, t.YELLOW, max(0.0, min(1.0, grown - 1)))  # yellows over its 2nd stint
+        stem = t.blend(t.CARD, leaf, 0.7)
+
+        def wave(x):
+            return cy + 3 * math.sin((x - left) / 17)
+
+        d.line([(x, wave(x)) for x in range(int(left), int(left + length) + 1, 2)], fill=stem, width=3)
+        for i, x in enumerate(range(int(left) + 16, int(left + length) - 6, 24)):
+            side = -1 if i % 2 else 1  # alternate above (1) and below the stem
+            sway = 0.25 * math.sin(2 * math.pi * now / 4 + i * 1.3)
+            a = 0.9 + sway  # tilted forward off the stem, up or down
+            ux, uy = math.cos(a), -side * math.sin(a)
+            nx, ny = -uy, ux
+            bx, by = x, wave(x)
+            pts = [(bx, by), (bx + 7 * ux + 4 * nx, by + 7 * uy + 4 * ny), (bx + 15 * ux, by + 15 * uy),
+                   (bx + 7 * ux - 4 * nx, by + 7 * uy - 4 * ny)]
+            d.polygon(pts, fill=leaf)
+        tip = left + length
+        d.ellipse((tip - 3, wave(tip) - 3, tip + 3, wave(tip) + 3), fill=t.blend(leaf, t.TEXT, 0.4))
 
     def _pulse(self) -> float:
         phase = (self._now() % self.pulse) / self.pulse
@@ -329,50 +415,163 @@ class Agents(Widget):
         `claude_window`, else 1M."""
         return self._context_window(s) or 1_000_000
 
-    def _draw_detailed(self, d, left, y, w, h):
+    def _draw_detailed(self, d, left, y, w, h, k=1.0):
         """Few sessions (<= `detail_rows`): two lines each. Name + status, then model, a
-        context-fill bar and context tokens. Names stay neutral: the bar shows fill."""
-        slot = min((h - 2 * y) / len(self.active), 90)
+        context-fill bar and context tokens. Names stay neutral: the bar shows fill.
+        `k` scales everything up for fewer sessions (`grow`)."""
+        slot = min((h - 2 * y) / len(self.active), 90 * k)
         # names shrink with the slot (23 px at 64+, 22 px at 60) so four sessions still fit
-        name_size = min(23, t.px(slot * 0.36))
-        content = name_size + 29  # name line to the bottom of the detail line
+        name_size = min(t.px(23 * k), t.px(slot * 0.36))
+        content = name_size + 29 * k  # name line to the bottom of the detail line
         pad = max(2, (slot - content) / 2)  # centred in its slot: few sessions spread out
         name_f = t.font(name_size, self.name_weight)
-        small = t.font(16)
-        small_b = t.font(16, "bold")
+        small = t.font(16 * k)
+        small_b = t.font(16 * k, "bold")
         status_right = w - t.PAD
-        text_x = left + 30
-        model_w = d.textlength("gpt-6.6-astra xhigh", font=small)  # longest expected model + effort
-        num_w = d.textlength("99.9K", font=small_b)
+        text_x = left + t.px(30 * k)
+        model_w = d.textlength("gemini-3.8-flash high", font=small)  # longest expected model + effort
+        num_w = d.textlength("999K", font=small_b)
+        icon = min(t.px(22 * k), name_size)
+        bar_h = t.px(8 * k)
+        n0, n1 = t.ink(d, name_f)
+        s0, s1 = t.ink(d, small)
+        lines = [max(n1 - n0, icon), max(s1 - s0, bar_h)]  # ink heights: name line, detail line
+        if t.MARGIN is not None:  # first name on the top margin, last detail line on the bottom
+            tops = t.spread(t.PAD, h - t.PAD, [lines] * len(self.active), max_within=12)
         for i, s in enumerate(self.active):
-            ry = y + i * slot + pad
-            icon = min(22, name_size)
-            t.icon(d, left, ry + name_size * 0.6 - icon / 2, s.tool, icon)
+            if t.MARGIN is not None:
+                ry = tops[i][0] + (lines[0] - (n1 - n0)) / 2 - n0
+                t.icon(d, left, t.px(ry + (n0 + n1) / 2 - icon / 2), s.tool, icon)
+            else:
+                ry = y + i * slot + pad
+                t.icon(d, left, ry + name_size * 0.6 - icon / 2, s.tool, icon)
             self._status(d, status_right, ry, s, name_f)
             name_right = status_right - self._status_width(d, s, name_f) - 12
             d.text((text_x, ry), t.fit_text(d, s.label, name_f, name_right - text_x),
                    font=name_f, fill=t.TEXT)
-            cy = ry + name_size + 21  # detail line centre
-            _, y0, _, y1 = d.textbbox((0, 0), "0", font=small)
-            ty = cy - (y0 + y1) / 2
-            # left to right: model + effort (right-aligned in their column, so efforts line
-            # up), context tokens, then the fill bar out to the right edge
+            # detail line centre
+            cy = tops[i][1] + lines[1] / 2 if t.MARGIN is not None else ry + name_size + 21 * k
+            ty = cy - (s0 + s1) / 2
+            # left to right: model + effort under the name, context tokens in a column after
+            # the longest model, then the fill bar out to the right edge
             model = s.model.removeprefix("claude-") or "?"
             effort = EFFORT.get(s.effort, s.effort)
             eff_w = d.textlength(" " + effort, font=small) if effort else 0
             model = t.fit_text(d, model, small, model_w - eff_w)
             model_right = text_x + model_w
+            d.text((text_x, ty), model, font=small, fill=t.MUTED)
             if effort:  # effort a step brighter than the model so it stands apart
-                t.text_right(d, model_right, ty, effort, small, t.TEXT)
-            t.text_right(d, model_right - eff_w, ty, model, small, t.MUTED)
+                d.text((text_x + d.textlength(model, font=small) + eff_w - d.textlength(effort, font=small), ty),
+                       effort, font=small, fill=t.TEXT)
             count_right = model_right + 14 + num_w
-            t.text_right(d, count_right, ty, t.human_count(s.context) if s.context else "—", small_b, t.TEXT)
-            window = self._window(s)
-            pct = max(0.0, min(100.0, 100 * s.context / window)) if window else 0.0
+            t.text_right(d, count_right, ty, context_text(s.context), small_b, t.TEXT)
             bar_left = count_right + 10
-            t.bar(d, bar_left, t.px(cy - 4), status_right - bar_left, 8, pct, t.ACCENT)
+            if s.context:  # unknown (agy doesn't report it): no empty bar
+                t.bar(d, bar_left, t.px(cy - bar_h / 2), status_right - bar_left, bar_h, self._fill(s), t.ACCENT)
+
+    def _fill(self, s: Session) -> float:
+        """Context fill, % of the window."""
+        window = self._window(s)
+        return max(0.0, min(100.0, 100 * s.context / window)) if window else 0.0
+
+    def _draw_hero(self, d, left, y, w, h, inset=24):
+        """One or two sessions (`grow`): each gets a large block (see _draw_big); two share the
+        card, a size down. One alone gets the `nudge` vine under it. `inset` widens the right
+        margin beyond the rows' (without a [display] margin); status, % and bar end together.
+        With a margin, the lines run from the top margin to the bottom one, evenly spaced
+        (two sessions: twice the gap between them)."""
+        right = w - t.PAD - inset
+        n = min(2, len(self.active))
+        k = 1.0 if n == 1 else 0.8
+        heights = self._big_heights(d, k)
+        vine = self._nudging() and n == 1
+        vine_h = 26
+        if t.MARGIN is not None:
+            groups = [list(heights) + ([vine_h] if vine else [])] if n == 1 else [list(heights)] * 2
+            tops = t.spread(t.PAD, h - t.PAD, groups)
+            if vine:
+                self._draw_vine(d, left + 44, right, tops[0][3], vine_h)
+            for s, g in zip(self.active[:n], tops):
+                self._draw_big(d, s, left, right, k, g[:3])
+            return
+        bottom = h - y
+        if n == 1:
+            if vine:  # the vine's row, last
+                gap = (h - 2 * y - vine_h) / 5  # as if a fourth line of the block
+                self._draw_vine(d, left + 44, right, bottom - gap - vine_h, vine_h)
+                bottom -= gap + vine_h
+            self._draw_big(d, self.active[0], left, right, k, self._even(y, bottom, heights))
+            return
+        half = (bottom - y) / 2
+        for i, s in enumerate(self.active[:2]):
+            self._draw_big(d, s, left, right, k, self._even(y + i * half, y + (i + 1) * half, heights))
+
+    @staticmethod
+    def _even(top, bottom, heights):
+        """Tops of lines spread from top to bottom, the same gap at the edges and between."""
+        gap = (bottom - top - sum(heights)) / (len(heights) + 1)
+        out, y = [], top + gap
+        for hh in heights:
+            out.append(y)
+            y += hh + gap
+        return out
+
+    def _big_fonts(self, k):
+        return (t.font(t.px(30 * k), self.name_weight), t.font(t.px(21 * k)), t.font(t.px(21 * k), "bold"),
+                t.px(32 * k), t.px(14 * k), t.px(10 * k))  # name, mid, mid bold, icon, bar, bar gap
+
+    def _big_heights(self, d, k):
+        """Ink heights of _draw_big's lines: name (or its taller icon), model, context + bar."""
+        name_f, mid_f, _, icon, bar_h, bar_gap = self._big_fonts(k)
+        n0, n1 = t.ink(d, name_f)
+        m0, m1 = t.ink(d, mid_f)
+        return (max(n1 - n0, icon), m1 - m0, m1 - m0 + bar_gap + bar_h)
+
+    def _draw_big(self, d, s, left, right, k, tops):
+        """A large name and status, the model and effort, then its context as "60K of 258K",
+        the fill % and a bar on a line of its own, the lines' ink starting at `tops`. `k`
+        scales it (1: one session)."""
+        name_f, mid_f, mid_b, icon, bar_h, bar_gap = self._big_fonts(k)
+        _, n0, _, n1 = d.textbbox((0, 0), "0", font=name_f)
+        _, m0, _, m1 = d.textbbox((0, 0), "0", font=mid_f)
+        line1 = self._big_heights(d, k)[0]
+        top = tops[0] + (line1 - (n1 - n0)) / 2  # the name's digits, centred in the icon's height
+        # line 1: icon, name, status
+        ny = top - n0
+        t.icon(d, left, t.px(top + (n1 - n0) / 2 - icon / 2), s.tool, icon)
+        self._status(d, right, ny, s, name_f)
+        text_x = left + t.px(44 * k)
+        name_right = right - self._status_width(d, s, name_f) - 14
+        name_color = self._context_color(s) if self.options.get("context_colors", False) else t.TEXT
+        d.text((text_x, ny), t.fit_text(d, s.label, name_f, name_right - text_x), font=name_f, fill=name_color)
+        # line 2: model, then effort a step brighter
+        top = tops[1]
+        model = s.model.removeprefix("claude-") or "?"
+        effort = EFFORT.get(s.effort, s.effort)
+        d.text((text_x, top - m0), model, font=mid_f, fill=t.MUTED)
+        if effort:
+            d.text((text_x + d.textlength(model + " ", font=mid_f), top - m0), effort, font=mid_f, fill=t.TEXT)
+        # line 3: context used of the window, fill % at the right, the bar under both
+        top = tops[2]
+        if not s.context:  # unknown (agy doesn't report it)
+            d.text((text_x, top - m0), "context —", font=mid_f, fill=t.MUTED)
+            return
+        used = context_text(s.context)
+        d.text((text_x, top - m0), used, font=mid_b, fill=t.TEXT)
+        of = f" of {context_text(self._window(s))}"
+        d.text((text_x + d.textlength(used, font=mid_b), top - m0), of, font=mid_f, fill=t.MUTED)
+        pct = self._fill(s)
+        t.text_right(d, right, top - m0, t.pct_text(pct), mid_b, t.TEXT)
+        t.bar(d, text_x, t.px(top + (m1 - m0) + bar_gap), right - text_x, bar_h, pct, t.ACCENT)
 
     def _draw_list_single(self, d, left, y, w, h):
+        grow = self.options.get("grow", False)
+        if not self.active and self.sleepy:
+            self._draw_sleeping(d, left, y, w, h)
+            return
+        if grow and len(self.active) in (1, 2):
+            self._draw_hero(d, left, y, w, h, inset=0 if t.MARGIN is not None else 24)
+            return
         if 0 < len(self.active) <= self.detail_rows and (h - 2 * y) / len(self.active) >= 60:
             self._draw_detailed(d, left, y, w, h)
             return
@@ -390,6 +589,14 @@ class Agents(Widget):
             shown = self.active[:min(cap, rows - 1)]
         if self.options.get("spread", False):  # rows share out the card's height
             row_h = max(row_h, (h - 2 * y + 6) / (len(shown) + (len(shown) < len(self.active))))
+        base_h = int(self.options.get("row_height", 28))
+        row_y = [y + i * row_h + (row_h - base_h) / 2 for i in range(len(shown) + 1)]
+        if t.MARGIN is not None:  # first row on the top margin, last on the bottom, even gaps
+            n0, n1 = t.ink(d, name_f)
+            top_off, bot_off = min(2, n0), max(24, n1)  # the icon (2..24) or the name's digits
+            count = len(shown) + (len(shown) < len(self.active))
+            row_y = [g[0] - top_off for g in t.spread(t.PAD, h - t.PAD, [[bot_off - top_off]] * count)]
+            row_y.append(row_y[-1])
         status_right = w - t.PAD
         status_w = max((self._status_width(d, s, name_f) for s in shown),
                        default=d.textlength("59m" if self.options.get("status", "text") == "dot" else "working", font=name_f))
@@ -402,8 +609,8 @@ class Agents(Widget):
         name_right = (ring_x - 16 if rings else tok_right - (d.textlength("99.9M", font=tok_f) if tokens else 0)) - 10
         ctx_right, name_right = name_right, name_right - (ctx_w + 12 if context else 0)
         for i, s in enumerate(shown):
-            ry = y + i * row_h + (row_h - int(self.options.get("row_height", 28))) / 2
-            t.icon(d, left, ry + 2, s.tool, 22)
+            ry = row_y[i]
+            t.icon(d, left, t.px(ry + 2), s.tool, 22)
             self._status(d, status_right, ry, s, name_f)
             if tokens:
                 t.text_right(d, tok_right, ry + 2, t.human_count(s.today), tok_f, t.MUTED)
@@ -413,12 +620,11 @@ class Agents(Widget):
             if context:
                 _, y0, _, y1 = d.textbbox((0, ry), "0", font=name_f)
                 cy = (y0 + y1) / 2
-                window = self._window(s)
-                pct = max(0.0, min(100.0, 100 * s.context / window)) if window else 0.0
-                t.bar(d, ctx_right - CONTEXT_BAR_W, t.px(cy - 3), CONTEXT_BAR_W, 6, pct, t.ACCENT)
+                if s.context:  # unknown (agy doesn't report it): no empty bar
+                    t.bar(d, ctx_right - CONTEXT_BAR_W, t.px(cy - 3), CONTEXT_BAR_W, 6, self._fill(s), t.ACCENT)
                 _, c0, _, c1 = d.textbbox((0, 0), "0", font=tok_f)
                 t.text_right(d, ctx_right - CONTEXT_BAR_W - 8, cy - (c0 + c1) / 2,
-                             t.human_count(s.context) if s.context else "—", tok_f, t.MUTED)
+                             context_text(s.context), tok_f, t.MUTED)
             name_color = self._context_color(s) if self.options.get("context_colors", False) else t.TEXT
             room = name_right - text_x
             d.text((text_x, ry), t.fit_text(d, s.label, name_f, room), font=name_f, fill=name_color)
@@ -426,7 +632,7 @@ class Agents(Widget):
             more = f"+{len(self.active) - len(shown)} more"
             if self.options.get("total", False):
                 more += f" · {len(self.active)} agents"
-            ry = y + len(shown) * row_h + (row_h - int(self.options.get("row_height", 28))) / 2
+            ry = row_y[len(shown)]
             d.text((left + 30, ry), more, font=name_f, fill=t.MUTED)
             if self.options.get("summary", False):
                 self._draw_summary(d, status_right, ry, name_f)
@@ -442,7 +648,7 @@ class Agents(Widget):
             x -= d.textlength(str(working), font=f) + 7
             t.text_right(d, x, y, self.DOT, f, t.GREEN)
             x -= d.textlength(self.DOT, font=f) + 16
-        for tool in ("codex", "claude"):
+        for tool in ("agy", "codex", "claude"):
             count = sum(s.tool == tool for s in self.active)
             if not count:
                 continue

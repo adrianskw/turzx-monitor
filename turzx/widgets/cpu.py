@@ -128,9 +128,10 @@ class Cpu(Widget):
         if self.power is not None and o.get("power", True):
             fields.append((t.watts_text(self.power, int(o.get("watt_digits", 2))), t.threshold_color(self.power, o.get("power_warn", 60), o.get("power_crit", 80))))
         if self.ram_mode == "inline":
-            t.stat_line(d, w, 6, o.get("label", "CPU"), fields, size=o.get("size", 30))
+            y = t.headline_y(o.get("size", 30))
+            t.stat_line(d, w, y, o.get("label", "CPU"), fields, size=o.get("size", 30))
             if self.ram_pct is not None:
-                t.graph_with_bar(d, w, h, o.get("size", 30), self.history, color, self.ram_pct, ram_color, fields)
+                t.graph_with_bar(d, w, h, o.get("size", 30), self.history, color, self.ram_pct, ram_color, fields, y=y)
             return
         # Every bar the same whole number of pixels, a multiple of the step count so each
         # `core_step` % (5) fills the same number of pixels (1 px per 5 % on a 20 px bar);

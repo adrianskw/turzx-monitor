@@ -425,6 +425,7 @@ def main() -> None:
     display_cfg, slots, cards = load_config(path, sample=args.sample_data)
     theme.load(display_cfg.get("theme", "current"), display_cfg.get("muted_lift", 0.0))
     theme.use_font(display_cfg.get("font"), display_cfg.get("font_scale", "match"))
+    theme.set_margin(display_cfg.get("margin"))
     app = App(display_cfg, slots, args.preview, cards)
 
     def stop(*_):  # finish the in-flight update instead of dying mid-transfer

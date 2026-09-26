@@ -52,6 +52,10 @@ def populate(widget: Widget) -> None:
     if isinstance(widget, ClockWeather):
         widget.clock.now = SAMPLE_DATE
         _weather(widget.weather)
+        # next sunrise (tomorrow 6:59) and sunset (today 6:58 pm) for `sun = true`
+        sun_times = ((SAMPLE_DATE + timedelta(days=1)).replace(hour=6, minute=59).timestamp(),
+                     SAMPLE_DATE.replace(hour=18, minute=58).timestamp())
+        widget._sun_cache = (SAMPLE_NOW // 60, sun_times)
     elif isinstance(widget, Clock):
         widget.now = SAMPLE_DATE
     elif isinstance(widget, Weather):
@@ -91,16 +95,16 @@ def populate(widget: Widget) -> None:
         for tool, name, idle, running, tokens, hit, context, window in (
             ("codex", "turzx-5in-display", 20, 840, 870_000, 97, 60_000, 258_400),
             ("claude", "landing-page", 180, 600, 420_000, 82, 170_000, None),
-            ("codex", "docs", 1320, 300, 98_000, 55, 230_000, 258_400),
+            ("agy", "docs", 1320, 300, 0, 0, 97_000, 128_000),  # agy: context, but no token counts
         ):
             session = Session(tool, Path("/sample") / name)
             session.cwd = f"/sample/{name}"
             session.mtime = SAMPLE_NOW - idle
             session.turn_start = session.mtime - running
             session.today = tokens
-            session.input_total, session.cache_read = 1000, hit * 10
+            session.input_total, session.cache_read = (1000, hit * 10) if tokens else (0, 0)
             session.context, session.window = context, window
-            session.model = "gpt-6.6-astra" if tool == "codex" else "claude-opus-5-5"
+            session.model = {"codex": "gpt-6.6-astra", "agy": "gemini-3.8-flash"}.get(tool, "claude-opus-5-5")
             session.effort = {"turzx-5in-display": "xhigh", "landing-page": "medium"}.get(name, "high")
             session.title = "checkout redesign" if name == "landing-page" else ""  # a /rename
             if name == "landing-page":  # stopped on a permission prompt: shows the bell
